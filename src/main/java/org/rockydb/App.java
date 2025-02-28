@@ -3,12 +3,64 @@
  */
 package org.rockydb;
 
+import org.checkerframework.checker.units.qual.K;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
 public class App {
     public String getGreeting() {
         return "Hello World!";
     }
 
-    public static void main(String[] args) {
-        System.out.println(new App().getGreeting());
+    public static void main(String[] args) throws IOException {
+        Path path = Path.of("./super.db");
+        File file = path.toFile();
+
+        PageLoader pageLoader = new PageLoader(file);
+
+        int SIZE = 32 * 1024;
+        Node root = new Node(pageLoader, 63);
+        Object[][] kkk = new Object[SIZE][2];
+        for (int i = 0; i < SIZE; i++) {
+            kkk[i][0] = new Value(("aKey" + i).getBytes());
+            kkk[i][1] = (long) i;
+        }
+        List<Object[]> suf = new ArrayList<>(List.of(kkk));
+
+        Collections.shuffle(suf);
+
+//        for (int i = 0; i < SIZE; i++) {
+//            //var res = root.addValue(new Value(("aKey" + i).getBytes()), i);
+//            Object[] o = suf.get(i);
+//            var res = root.addValue((Value) o[0], (long) o[1]);
+//            if (res != null) {
+//                root = new Node(pageLoader, new Value[]{res.key}, new long[]{res.left.page.getPageNumber(), res.right.page.getPageNumber()}, Node.BRANCH);
+//                root.page.writeValues(root.keys, root.pointers);
+//                pageLoader.savePage(root.page);
+//            }
+//            System.out.println(Arrays.toString(root.pointers));
+//        }
+
+
+        long start = System.currentTimeMillis();
+        for (int i = 0; i < SIZE; i++) {
+            //var res = root.addValue(new Value(("aKey" + i).getBytes()), i);
+            Object[] o = suf.get(i);
+            var resp = root.get((Value) o[0]);
+            //System.out.println("For key:" + new String(((Value) o[0]).getVal()) + " the value is" + resp);
+        }
+        long stop = System.currentTimeMillis();
+
+        System.out.println("Read 32 * 1024 values in: " + (stop - start) + " millis");
+
+        System.out.println("root id : " + root.page.getPageNumber());
+
+
     }
 }
