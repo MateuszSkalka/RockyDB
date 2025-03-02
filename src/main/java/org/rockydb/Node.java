@@ -7,43 +7,41 @@ public class Node {
     public static final byte BRANCH = 1;
     public static final byte LEAF = 2;
 
-    private final PageLoader pageLoader;
-    public Page page;
-    public Value[] keys;
-    public long[] pointers;
-    public byte type;
+    private final NodeManager nodeManager;
+    private long id;
+    private Value[] keys;
+    private long[] pointers;
+    private final byte type;
+    private int size;
 
 
-    public Node(PageLoader pageLoader, long pageNumber) {
-        this.pageLoader = pageLoader;
-        this.page = pageLoader.getPage(pageNumber);
-        this.type = page.getHeaders().getNodeType();
-
-        KeyValueTuple result = page.readValues();
-        this.keys = result.keys();
-        this.pointers = result.valuePointers();
-    }
-
-    public Node(PageLoader pageLoader, Value[] keys, long[] pointers, byte type) {
-        this.pageLoader = pageLoader;
-        this.page = pageLoader.createPage(type);
+    public Node(
+            NodeManager nodeManager,
+            long id,
+            Value[] keys,
+            long[] valuePointers,
+            byte type,
+            int size
+    ) {
+        this.nodeManager = nodeManager;
+        this.id = id;
         this.keys = keys;
-        this.pointers = pointers;
+        this.pointers = valuePointers;
         this.type = type;
+        this.size = size;
     }
 
 
     public SplitResult addValue(Value key, long value) {
         int idx = Arrays.binarySearch(keys, key);
 
-        if (page.getHeaders().getNodeType() == BRANCH) {
+        if (type == BRANCH) {
             idx = idx < 0 ? -(idx + 1) : idx + 1;
-            long nextPage = pointers[idx];
-            SplitResult result = new Node(pageLoader, nextPage).addValue(key, value);
+            long nextId = pointers[idx];
+            SplitResult result = nodeManager.readNode(nextId).addValue(key, value);
             if (result == null) {
                 return null;
             }
-
 
             Value[] newKeys = new Value[keys.length + 1];
             System.arraycopy(keys, 0, newKeys, 0, idx);
@@ -51,28 +49,26 @@ public class Node {
             System.arraycopy(keys, idx, newKeys, idx + 1, keys.length - idx);
             long[] newPointers = new long[pointers.length + 1];
             System.arraycopy(pointers, 0, newPointers, 0, idx + 1);
-            newPointers[idx + 1] = result.right.page.getPageNumber();
+            newPointers[idx + 1] = result.right.id;
             System.arraycopy(pointers, idx + 1, newPointers, idx + 2, pointers.length - idx - 1);
 
             this.keys = newKeys;
             this.pointers = newPointers;
+
+
             SplitResult sr = null;
-            if (needsSplit(key)) {
+            if (needsSplit(calcSizeAfterUpdate(key))) {
                 sr = splitBranch();
             }
 
-            page.getHeaders().setPageSize(calculateSizeAfterInsert(key));
-            page.getHeaders().setElemCount(keys.length);
-            page.writeValues(keys, pointers);
-            pageLoader.savePage(page);
+            nodeManager.writeNode(this);
             if (sr != null) {
-                sr.right.page.writeValues(sr.right.keys, sr.right.pointers);
-                pageLoader.savePage(sr.right.page);
+                nodeManager.writeNode(sr.right);
             }
 
             return sr;
 
-        } else if (page.getHeaders().getNodeType() == LEAF) {
+        } else if (type == LEAF) {
             if (idx > -1) {
                 pointers[idx] = value;
                 return null;
@@ -91,23 +87,20 @@ public class Node {
 
                 this.keys = newKeys;
                 this.pointers = newPointers;
+
                 SplitResult result = null;
-                if (needsSplit(key)) {
+                if (needsSplit(calcSizeAfterUpdate(key))) {
                     result = splitLeaf();
                 }
 
-                page.writeValues(keys, pointers);
-                pageLoader.savePage(page);
+                nodeManager.writeNode(this);
 
                 if (result != null) {
-                    result.right.page.writeValues(result.right.keys, result.right.pointers);
-                    pageLoader.savePage(result.right.page);
+                    nodeManager.writeNode(result.right);
                 }
 
                 return result;
             }
-
-
         } else {
             throw new UnsupportedOperationException();
         }
@@ -116,11 +109,11 @@ public class Node {
     public long get(Value key) {
         int idx = Arrays.binarySearch(keys, key);
 
-        if (page.getHeaders().getNodeType() == BRANCH) {
+        if (type == BRANCH) {
             idx = idx < 0 ? -(idx + 1) : idx + 1;
-            long nextPage = pointers[idx];
-            return new Node(pageLoader, nextPage).get(key);
-        } else if (page.getHeaders().getNodeType() == LEAF) {
+            long nextId = pointers[idx];
+            return nodeManager.readNode(nextId).get(key);
+        } else if (type == LEAF) {
             if (idx > -1) {
                 return pointers[idx];
             } else {
@@ -131,13 +124,12 @@ public class Node {
         }
     }
 
-    private boolean needsSplit(Value keyToAdd) {
-        int currentSize = calculateSizeAfterInsert(keyToAdd);
-        return currentSize > Page.PAGE_SIZE;
+    private boolean needsSplit(int nodeSize) {
+        return nodeSize > NodeManager.PAGE_SIZE;
     }
 
-    private int calculateSizeAfterInsert(Value keyToAdd) {
-        return page.getHeaders().getPageSize() + Long.BYTES + Integer.BYTES + keyToAdd.getVal().length;
+    private int calcSizeAfterUpdate(Value keyToAdd) {
+        return size + Long.BYTES + Integer.BYTES + keyToAdd.val().length;
     }
 
     private SplitResult splitBranch() {
@@ -158,7 +150,7 @@ public class Node {
 
         this.keys = leftKeys;
         this.pointers = leftPointers;
-        Node rightNode = new Node(pageLoader, rightKeys, rightPointers, Node.BRANCH);
+        Node rightNode = nodeManager.writeNode(BRANCH, rightKeys, rightPointers);
         return new SplitResult(promotedValue, this, rightNode);
     }
 
@@ -179,8 +171,32 @@ public class Node {
 
         this.keys = leftKeys;
         this.pointers = leftPointers;
-        Node rightNode = new Node(pageLoader, rightKeys, rightPointers, Node.LEAF);
+        Node rightNode = nodeManager.writeNode(LEAF, rightKeys, rightPointers);
         return new SplitResult(rightNode.keys[0], this, rightNode);
+    }
+
+    public long getId() {
+        return id;
+    }
+
+    public Value[] getKeys() {
+        return keys;
+    }
+
+    public long[] getPointers() {
+        return pointers;
+    }
+
+    public byte getType() {
+        return type;
+    }
+
+    public int getSize() {
+        return size;
+    }
+
+    public void setSize(int size) {
+        this.size = size;
     }
 
     static class SplitResult {
@@ -193,9 +209,5 @@ public class Node {
             this.left = left;
             this.right = right;
         }
-
-        public SplitResult() {
-        }
     }
-
 }

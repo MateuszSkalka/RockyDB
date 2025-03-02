@@ -1,15 +1,6 @@
 package org.rockydb;
 
-public class Value implements Comparable<Value> {
-    private final byte[] val;
-
-    public Value(byte[] val) {
-        this.val = val;
-    }
-
-    public byte[] getVal() {
-        return val;
-    }
+public record Value(byte[] val) implements Comparable<Value> {
 
     @Override
     public int compareTo(Value o) {

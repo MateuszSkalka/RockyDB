@@ -3,8 +3,6 @@
  */
 package org.rockydb;
 
-import org.checkerframework.checker.units.qual.K;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -22,10 +20,10 @@ public class App {
         Path path = Path.of("./super.db");
         File file = path.toFile();
 
-        PageLoader pageLoader = new PageLoader(file);
+        NodeManager nodeManager = new NodeManager(file);
 
         int SIZE = 32 * 1024;
-        Node root = new Node(pageLoader, 63);
+        Node root = nodeManager.readNode(1L);
         Object[][] kkk = new Object[SIZE][2];
         for (int i = 0; i < SIZE; i++) {
             kkk[i][0] = new Value(("aKey" + i).getBytes());
@@ -33,19 +31,17 @@ public class App {
         }
         List<Object[]> suf = new ArrayList<>(List.of(kkk));
 
-        Collections.shuffle(suf);
+        //Collections.shuffle(suf);
 
-//        for (int i = 0; i < SIZE; i++) {
-//            //var res = root.addValue(new Value(("aKey" + i).getBytes()), i);
-//            Object[] o = suf.get(i);
-//            var res = root.addValue((Value) o[0], (long) o[1]);
-//            if (res != null) {
-//                root = new Node(pageLoader, new Value[]{res.key}, new long[]{res.left.page.getPageNumber(), res.right.page.getPageNumber()}, Node.BRANCH);
-//                root.page.writeValues(root.keys, root.pointers);
-//                pageLoader.savePage(root.page);
-//            }
-//            System.out.println(Arrays.toString(root.pointers));
-//        }
+        for (int i = 0; i < SIZE; i++) {
+            //var res = root.addValue(new Value(("aKey" + i).getBytes()), i);
+            Object[] o = suf.get(i);
+            var res = root.addValue((Value) o[0], (long) o[1]);
+            if (res != null) {
+                root = nodeManager.writeNode(Node.BRANCH, new Value[]{res.key}, new long[]{res.left.getId(), res.right.getId()});
+            }
+            System.out.println(Arrays.toString(root.getPointers()));
+        }
 
 
         long start = System.currentTimeMillis();
@@ -53,13 +49,13 @@ public class App {
             //var res = root.addValue(new Value(("aKey" + i).getBytes()), i);
             Object[] o = suf.get(i);
             var resp = root.get((Value) o[0]);
-            //System.out.println("For key:" + new String(((Value) o[0]).getVal()) + " the value is" + resp);
+            System.out.println("For key:" + new String(((Value) o[0]).val()) + " the value is" + resp);
         }
         long stop = System.currentTimeMillis();
 
         System.out.println("Read 32 * 1024 values in: " + (stop - start) + " millis");
 
-        System.out.println("root id : " + root.page.getPageNumber());
+        System.out.println("root id : " + root.getId());
 
 
     }
