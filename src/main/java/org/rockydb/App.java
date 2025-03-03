@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Random;
 
 public class App {
     public String getGreeting() {
@@ -22,7 +23,7 @@ public class App {
 
         NodeManager nodeManager = new NodeManager(file);
 
-        int SIZE = 32 * 1024;
+        int SIZE = 64 * 1024;
         Node root = nodeManager.readNode(1L);
         Object[][] kkk = new Object[SIZE][2];
         for (int i = 0; i < SIZE; i++) {
@@ -31,7 +32,7 @@ public class App {
         }
         List<Object[]> suf = new ArrayList<>(List.of(kkk));
 
-        //Collections.shuffle(suf);
+        Collections.shuffle(suf, new Random(123L));
 
         for (int i = 0; i < SIZE; i++) {
             //var res = root.addValue(new Value(("aKey" + i).getBytes()), i);
@@ -40,7 +41,6 @@ public class App {
             if (res != null) {
                 root = nodeManager.writeNode(Node.BRANCH, new Value[]{res.key}, new long[]{res.left.getId(), res.right.getId()});
             }
-            System.out.println(Arrays.toString(root.getPointers()));
         }
 
 

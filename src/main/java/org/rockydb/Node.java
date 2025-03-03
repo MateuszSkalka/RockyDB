@@ -8,7 +8,7 @@ public class Node {
     public static final byte LEAF = 2;
 
     private final NodeManager nodeManager;
-    private long id;
+    private final long id;
     private Value[] keys;
     private long[] pointers;
     private final byte type;
@@ -16,12 +16,12 @@ public class Node {
 
 
     public Node(
-            NodeManager nodeManager,
-            long id,
-            Value[] keys,
-            long[] valuePointers,
-            byte type,
-            int size
+        NodeManager nodeManager,
+        long id,
+        Value[] keys,
+        long[] valuePointers,
+        byte type,
+        int size
     ) {
         this.nodeManager = nodeManager;
         this.id = id;
@@ -133,20 +133,19 @@ public class Node {
     }
 
     private SplitResult splitBranch() {
-        int keyMid = keys.length / 2;
-        int pointersMid = pointers.length / 2;
+        int keyMid = keys.length / 2; // 98
         Value promotedValue = keys[keyMid];
 
         Value[] leftKeys = new Value[keyMid];
-        long[] leftPointers = new long[pointersMid];
+        long[] leftPointers = new long[keyMid + 1];
 
-        Value[] rightKeys = new Value[keys.length - keyMid - 1];
-        long[] rightPointers = new long[pointers.length - pointersMid];
+        Value[] rightKeys = new Value[keys.length - leftKeys.length - 1];
+        long[] rightPointers = new long[pointers.length - leftPointers.length];
 
         System.arraycopy(keys, 0, leftKeys, 0, leftKeys.length);
         System.arraycopy(pointers, 0, leftPointers, 0, leftPointers.length);
         System.arraycopy(keys, keyMid + 1, rightKeys, 0, rightKeys.length);
-        System.arraycopy(pointers, pointersMid, rightPointers, 0, rightPointers.length);
+        System.arraycopy(pointers, leftPointers.length, rightPointers, 0, rightPointers.length);
 
         this.keys = leftKeys;
         this.pointers = leftPointers;
