@@ -6,17 +6,16 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 
-public class NodeManager {
+public class NodeManager implements AutoCloseable {
     public static final int PAGE_SIZE = 4 * 1024;
     public static final int PAGE_HEADERS_SIZE = 9;
-    private final File dbFile;
+    private final RandomAccessFile raf;
     private final FileChannel fileChannel;
     private final FileHeaders fileHeaders;
 
     public NodeManager(File dbFile) throws IOException {
-        this.dbFile = dbFile;
         boolean createDb = !dbFile.exists();
-        RandomAccessFile raf = new RandomAccessFile(dbFile, "rw");
+        raf = new RandomAccessFile(dbFile, "rw");
         this.fileChannel = raf.getChannel();
         if (createDb) {
             FileHeaders fileHeaders = new FileHeaders();
@@ -102,14 +101,24 @@ public class NodeManager {
         buffer.putInt(keys.length);
         buffer.putInt(-1);
 
-        for (int i = 0; i < keys.length; i++) {
-            buffer.putInt(keys[i].val().length);
-            buffer.put(keys[i].val());
+        for (Value key : keys) {
+            buffer.putInt(key.val().length);
+            buffer.put(key.val());
         }
-        for (int i = 0; i < valuePointers.length; i++) {
-            buffer.putLong(valuePointers[i]);
+        for (long valuePointer : valuePointers) {
+            buffer.putLong(valuePointer);
         }
         buffer.putInt(5, buffer.position());
         return buffer;
+    }
+
+    @Override
+    public void close() throws Exception {
+        if (fileChannel != null) {
+            fileChannel.close();
+        }
+        if (raf != null) {
+            raf.close();
+        }
     }
 }

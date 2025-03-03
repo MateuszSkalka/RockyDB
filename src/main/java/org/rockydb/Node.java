@@ -32,7 +32,7 @@ public class Node {
     }
 
 
-    public SplitResult addValue(Value key, long value) {
+    protected SplitResult addValue(Value key, long value) {
         int idx = Arrays.binarySearch(keys, key);
 
         if (type == BRANCH) {
@@ -106,7 +106,7 @@ public class Node {
         }
     }
 
-    public long get(Value key) {
+    protected long get(Value key) {
         int idx = Arrays.binarySearch(keys, key);
 
         if (type == BRANCH) {
@@ -188,10 +188,6 @@ public class Node {
 
     public byte getType() {
         return type;
-    }
-
-    public int getSize() {
-        return size;
     }
 
     public void setSize(int size) {
