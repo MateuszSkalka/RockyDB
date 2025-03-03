@@ -5,6 +5,8 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class NodeManager implements AutoCloseable {
     public static final int PAGE_SIZE = 4 * 1024;
@@ -14,26 +16,11 @@ public class NodeManager implements AutoCloseable {
     private final FileHeaders fileHeaders;
 
     public NodeManager(File dbFile) throws IOException {
-        boolean createDb = !dbFile.exists();
         raf = new RandomAccessFile(dbFile, "rw");
         this.fileChannel = raf.getChannel();
-        if (createDb) {
-            FileHeaders fileHeaders = new FileHeaders();
-            this.fileHeaders = fileHeaders;
-            ByteBuffer buffer = ByteBuffer.wrap(new byte[FileHeaders.TOTAL_BYTES]);
-            fileHeaders.write(buffer);
-            buffer.rewind();
-            fileChannel.write(buffer, 0);
-            Node rootNode = newNode(Node.LEAF);
-            writeNode(rootNode);
-        } else {
-            ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
-            fileChannel.read(buffer, 0);
-            buffer.rewind();
-            this.fileHeaders = new FileHeaders(buffer);
-        }
-    }
+        this.fileHeaders = new FileHeaders();
 
+    }
 
     public Node readNode(long id) {
         try {
@@ -66,14 +53,10 @@ public class NodeManager implements AutoCloseable {
         }
     }
 
-    public Node newNode(byte type) {
-        return new Node(this, fileHeaders.getAndIncrementPagesCount(), new Value[]{}, new long[]{}, type, PAGE_HEADERS_SIZE);
-    }
-
     public Node writeNode(byte type, Value[] keys, long[] valuePointers) {
         try {
             ByteBuffer buffer = createBuffer(type, keys, valuePointers);
-            long nodeId = fileHeaders.getAndIncrementPagesCount();
+            long nodeId = fileHeaders.incrementAndGetPageCount();
             int size = buffer.position();
             buffer.rewind();
             fileChannel.write(buffer, PAGE_SIZE * nodeId);
@@ -112,6 +95,10 @@ public class NodeManager implements AutoCloseable {
         return buffer;
     }
 
+    public boolean anyNodeExists() {
+        return fileHeaders.pagesCount.get() > 0L;
+    }
+
     @Override
     public void close() throws Exception {
         if (fileChannel != null) {
@@ -119,6 +106,25 @@ public class NodeManager implements AutoCloseable {
         }
         if (raf != null) {
             raf.close();
+        }
+    }
+
+    private class FileHeaders {
+        public static final int FILE_HEADERS_SIZE = 16;
+
+        private long rootId;
+        private AtomicLong pagesCount;
+
+        public FileHeaders() throws IOException {
+            ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
+            fileChannel.read(buffer, 0);
+            buffer.rewind();
+            rootId = buffer.getLong();
+            pagesCount = new AtomicLong(buffer.getLong());
+        }
+
+        public long incrementAndGetPageCount() {
+            return pagesCount.incrementAndGet();
         }
     }
 }

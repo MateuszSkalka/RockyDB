@@ -15,6 +15,9 @@ public class App {
         File file = path.toFile();
 
         NodeManager nodeManager = new NodeManager(file);
+        if (!nodeManager.anyNodeExists()){
+            Node root = nodeManager.writeNode(Node.LEAF, new Value[]{}, new long[]{});
+        }
 
         int SIZE = 128 * 1024;
         Node root = nodeManager.readNode(1L);
@@ -40,14 +43,13 @@ public class App {
         for (int i = 0; i < SIZE; i++) {
             Object[] o = suf.get(i);
             var resp = root.get((Value) o[0]);
-            System.out.println("For key: " + new String(((Value) o[0]).val()) + " the value is " + resp);
+            //System.out.println("For key: " + new String(((Value) o[0]).val()) + " the value is " + resp);
         }
         long stop = System.currentTimeMillis();
 
         System.out.println("Read " + SIZE +  " values in: " + (stop - start) + " millis");
 
         System.out.println("root id : " + root.getId());
-
 
     }
 }
