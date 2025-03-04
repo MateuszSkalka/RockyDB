@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public class NodeManager implements AutoCloseable {
     public static final int PAGE_SIZE = 4 * 1024;
     public static final int PAGE_HEADERS_SIZE = 9;
+    public static final int KEY_PREFIX_SIZE = 4;
+    public static final int VALUE_POINTER_SIZE = 8;
     private final RandomAccessFile raf;
     private final FileChannel fileChannel;
     private final FileHeaders fileHeaders;

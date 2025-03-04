@@ -19,11 +19,11 @@ public class App {
             Node root = nodeManager.writeNode(Node.LEAF, new Value[]{}, new long[]{});
         }
 
-        int SIZE = 128 * 1024;
+        int SIZE = 256 * 1024;
         Node root = nodeManager.readNode(1L);
         Object[][] kkk = new Object[SIZE][2];
         for (int i = 0; i < SIZE; i++) {
-            kkk[i][0] = new Value(("aKey" + i).getBytes());
+            kkk[i][0] = new Value(("A-LONG-KEY-" + i).getBytes());
             kkk[i][1] = (long) i;
         }
         List<Object[]> suf = new ArrayList<>(List.of(kkk));
@@ -43,7 +43,7 @@ public class App {
         for (int i = 0; i < SIZE; i++) {
             Object[] o = suf.get(i);
             var resp = root.get((Value) o[0]);
-            //System.out.println("For key: " + new String(((Value) o[0]).val()) + " the value is " + resp);
+            System.out.println("For key: " + new String(((Value) o[0]).val()) + " the value is " + resp);
         }
         long stop = System.currentTimeMillis();
 

@@ -6,6 +6,9 @@ public class Node {
     public static final byte UNUSED = 0;
     public static final byte BRANCH = 1;
     public static final byte LEAF = 2;
+    public static final int MAX_NODE_SIZE = NodeManager.PAGE_SIZE;
+    public static final int MAX_DATA_SIZE = NodeManager.PAGE_SIZE - NodeManager.PAGE_HEADERS_SIZE;
+    public static final int MIN_NODE_SIZE = MAX_NODE_SIZE / 4;
 
     private final NodeManager nodeManager;
     private final long id;
@@ -47,6 +50,7 @@ public class Node {
             System.arraycopy(keys, 0, newKeys, 0, idx);
             newKeys[idx] = result.key;
             System.arraycopy(keys, idx, newKeys, idx + 1, keys.length - idx);
+
             long[] newPointers = new long[pointers.length + 1];
             System.arraycopy(pointers, 0, newPointers, 0, idx + 1);
             newPointers[idx + 1] = result.right.id;
@@ -55,9 +59,8 @@ public class Node {
             this.keys = newKeys;
             this.pointers = newPointers;
 
-
             SplitResult sr = null;
-            if (needsSplit(calcSizeAfterUpdate(key))) {
+            if (needsSplit(updateSize(key))) {
                 sr = splitBranch();
             }
 
@@ -71,6 +74,7 @@ public class Node {
         } else if (type == LEAF) {
             if (idx > -1) {
                 pointers[idx] = value;
+                nodeManager.writeNode(this);
                 return null;
             } else {
                 idx = -(idx + 1);
@@ -89,7 +93,7 @@ public class Node {
                 this.pointers = newPointers;
 
                 SplitResult result = null;
-                if (needsSplit(calcSizeAfterUpdate(key))) {
+                if (needsSplit(updateSize(key))) {
                     result = splitLeaf();
                 }
 
@@ -100,6 +104,37 @@ public class Node {
                 }
 
                 return result;
+            }
+        } else {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    protected SplitResult deleteValue(Value key) {
+        int idx = Arrays.binarySearch(keys, key);
+
+        if (type == BRANCH) {
+            idx = idx < 0 ? -(idx + 1) : idx + 1;
+            long nextId = pointers[idx];
+            SplitResult result = nodeManager.readNode(nextId).deleteValue(key);
+            return null;
+
+        } else if (type == LEAF) {
+            if (idx > -1) {
+                Value[] newKeys = new Value[keys.length - 1];
+                System.arraycopy(keys, 0, newKeys, 0, idx);
+                System.arraycopy(keys, idx + 1, newKeys, idx, newKeys.length);
+
+                long[] newPointers = new long[keys.length - 1];
+                System.arraycopy(pointers, 0, newPointers, 0, idx);
+                System.arraycopy(pointers, idx + 1, newPointers, idx, newPointers.length);
+                this.keys = newKeys;
+                this.pointers = newPointers;
+
+                nodeManager.writeNode(this);
+                return null;
+            } else {
+                return null;
             }
         } else {
             throw new UnsupportedOperationException();
@@ -125,15 +160,17 @@ public class Node {
     }
 
     private boolean needsSplit(int nodeSize) {
-        return nodeSize > NodeManager.PAGE_SIZE;
+        return nodeSize > MAX_NODE_SIZE;
     }
 
-    private int calcSizeAfterUpdate(Value keyToAdd) {
-        return size + Long.BYTES + Integer.BYTES + keyToAdd.val().length;
+    private int updateSize(Value keyToAdd) {
+        size += NodeManager.VALUE_POINTER_SIZE + NodeManager.KEY_PREFIX_SIZE + keyToAdd.val().length;
+        return size;
     }
 
     private SplitResult splitBranch() {
-        int keyMid = keys.length / 2; // 98
+        int keyMid = calculateBranchNodeSplitMid();
+
         Value promotedValue = keys[keyMid];
 
         Value[] leftKeys = new Value[keyMid];
@@ -154,7 +191,7 @@ public class Node {
     }
 
     private SplitResult splitLeaf() {
-        int keyMid = keys.length / 2;
+        int keyMid = calculateLeafNodeSplitMid();
         int pointersMid = pointers.length / 2;
 
         Value[] leftKeys = new Value[keyMid];
@@ -172,6 +209,41 @@ public class Node {
         this.pointers = leftPointers;
         Node rightNode = nodeManager.writeNode(LEAF, rightKeys, rightPointers);
         return new SplitResult(rightNode.keys[0], this, rightNode);
+    }
+
+    private int calculateBranchNodeSplitMid() {
+        int keyMid = 1;
+        int leftSize = sizeOfCell(0);
+        int rightSize = size - NodeManager.PAGE_HEADERS_SIZE - leftSize - sizeOfCell(keyMid);
+        while (
+            keyMid < keys.length - 2 &&
+                Math.abs(rightSize - leftSize) > Math.abs((rightSize - sizeOfCell(keyMid + 1)) - (leftSize + sizeOfCell(keyMid)))
+        ) {
+            leftSize += sizeOfCell(keyMid);
+            rightSize -= sizeOfCell(keyMid + 1);
+            keyMid++;
+        }
+        return keyMid;
+    }
+
+    private int calculateLeafNodeSplitMid() {
+        int keyMid = 1;
+        int leftSize = sizeOfCell(0);
+        int rightSize = size - NodeManager.PAGE_HEADERS_SIZE - leftSize;
+        while (
+            keyMid < keys.length - 2 &&
+                Math.abs(rightSize - leftSize) > Math.abs((rightSize - sizeOfCell(keyMid)) - (leftSize + sizeOfCell(keyMid)))
+        ) {
+            leftSize += sizeOfCell(keyMid);
+            rightSize -= sizeOfCell(keyMid);
+            keyMid++;
+        }
+        return keyMid;
+    }
+
+    private int sizeOfCell(int keyIdx) {
+        return NodeManager.KEY_PREFIX_SIZE + keys[keyIdx].val().length + NodeManager.VALUE_POINTER_SIZE;
+
     }
 
     public long getId() {
