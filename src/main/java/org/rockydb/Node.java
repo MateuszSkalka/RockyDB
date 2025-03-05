@@ -60,7 +60,7 @@ public class Node {
             this.pointers = newPointers;
 
             SplitResult sr = null;
-            if (needsSplit(updateSize(key))) {
+            if (needsSplit(updateSize(result.key))) {
                 sr = splitBranch();
             }
 
@@ -192,18 +192,17 @@ public class Node {
 
     private SplitResult splitLeaf() {
         int keyMid = calculateLeafNodeSplitMid();
-        int pointersMid = pointers.length / 2;
 
         Value[] leftKeys = new Value[keyMid];
-        long[] leftPointers = new long[pointersMid];
+        long[] leftPointers = new long[keyMid];
 
-        Value[] rightKeys = new Value[keys.length - keyMid];
-        long[] rightPointers = new long[pointers.length - pointersMid];
+        Value[] rightKeys = new Value[keys.length - leftKeys.length];
+        long[] rightPointers = new long[pointers.length - leftPointers.length];
 
         System.arraycopy(keys, 0, leftKeys, 0, leftKeys.length);
         System.arraycopy(pointers, 0, leftPointers, 0, leftPointers.length);
         System.arraycopy(keys, keyMid, rightKeys, 0, rightKeys.length);
-        System.arraycopy(pointers, pointersMid, rightPointers, 0, rightPointers.length);
+        System.arraycopy(pointers, keyMid, rightPointers, 0, rightPointers.length);
 
         this.keys = leftKeys;
         this.pointers = leftPointers;

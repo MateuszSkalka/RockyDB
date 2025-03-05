@@ -9,7 +9,17 @@ import java.util.List;
 import java.util.Random;
 
 public class App {
+    static String SALTCHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+    static Random random = new Random(1234L);
 
+    public static String genRandomString() {
+        int r = random.nextInt(500);
+        char[] chars = new char[r];
+        for (int i = 0; i < chars.length; i++) {
+            chars[i] = SALTCHARS.charAt(random.nextInt(SALTCHARS.length()));
+        }
+        return new String(chars);
+    }
     public static void main(String[] args) throws IOException {
         Path path = Path.of("./super.db");
         File file = path.toFile();
@@ -19,11 +29,11 @@ public class App {
             Node root = nodeManager.writeNode(Node.LEAF, new Value[]{}, new long[]{});
         }
 
-        int SIZE = 256 * 1024;
+        int SIZE = 32 * 1024;
         Node root = nodeManager.readNode(1L);
         Object[][] kkk = new Object[SIZE][2];
         for (int i = 0; i < SIZE; i++) {
-            kkk[i][0] = new Value(("A-LONG-KEY-" + i).getBytes());
+            kkk[i][0] = new Value((genRandomString()).getBytes());
             kkk[i][1] = (long) i;
         }
         List<Object[]> suf = new ArrayList<>(List.of(kkk));
