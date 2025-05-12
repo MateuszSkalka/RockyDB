@@ -5,6 +5,9 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.util.Arrays;
+import java.util.List;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class NodeManager implements AutoCloseable {
@@ -34,7 +37,7 @@ public class NodeManager implements AutoCloseable {
             int pageSize = buffer.getInt();
 
             Value[] keys = new Value[elemCount];
-            int pSize = nodeType == Node.LEAF ? elemCount : elemCount + 1;
+            int pSize =  elemCount + 1;
             long[] valuePointers = new long[pSize];
 
             for (int i = 0; i < elemCount; i++) {
@@ -43,26 +46,12 @@ public class NodeManager implements AutoCloseable {
                 buffer.get(bytes);
                 keys[i] = new Value(bytes);
             }
-
             for (int i = 0; i < valuePointers.length; i++) {
                 valuePointers[i] = buffer.getLong();
             }
 
-            return new Node(this, id, keys, valuePointers, nodeType, pageSize);
+            return new Node(id, keys, valuePointers, nodeType, pageSize);
         } catch (IOException ex) {
-            throw new RuntimeException();
-        }
-    }
-
-    public Node writeNode(byte type, Value[] keys, long[] valuePointers) {
-        try {
-            ByteBuffer buffer = createBuffer(type, keys, valuePointers);
-            long nodeId = fileHeaders.incrementAndGetPageCount();
-            int size = buffer.position();
-            buffer.rewind();
-            fileChannel.write(buffer, PAGE_SIZE * nodeId);
-            return new Node(this, nodeId, keys, valuePointers, type, size);
-        } catch (IOException e) {
             throw new RuntimeException();
         }
     }
@@ -70,10 +59,11 @@ public class NodeManager implements AutoCloseable {
     public Node writeNode(Node node) {
         try {
             ByteBuffer buffer = createBuffer(node.getType(), node.getKeys(), node.getPointers());
-            node.setSize(buffer.position());
+            long nodeId = node.getId() == null ? fileHeaders.incrementAndGetPageCount() : node.getId();
+            int size = buffer.position();
             buffer.rewind();
-            fileChannel.write(buffer, PAGE_SIZE * node.getId());
-            return node;
+            fileChannel.write(buffer, PAGE_SIZE * nodeId);
+            return new Node(nodeId, node.getKeys(), node.getPointers(), node.getType(), size);
         } catch (IOException e) {
             throw new RuntimeException();
         }
