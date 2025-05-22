@@ -16,8 +16,8 @@ public class BLinkTree {
         this.nodeLock = new NodeLockSupport();
         nodeManager.writeNode(new LeafNode(
             null,
-            new Value[]{new Value("root".getBytes())},
-            new Value[]{new Value("root".getBytes()), new Value(LongUtils.toByteArray(-1L))}));
+            new Value[]{new Value("9999".getBytes())},
+            new Value[]{new Value("9999".getBytes()), new Value(LongUtils.toByteArray(-1L))}));
         rootId = 1L;
         height = 1;
     }

@@ -30,7 +30,7 @@ public class LeafNode extends Node {
         } else {
             idx = -(idx + 1);
             Value[] newKeys = insert(keys, keyToAdd, idx);
-            Value[] newValues = insert(values, valueToAdd, idx + 1);
+            Value[] newValues = insert(values, valueToAdd, idx);
             return splitIfNeeded(newKeys, newValues);
         }
     }

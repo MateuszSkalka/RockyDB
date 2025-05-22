@@ -25,10 +25,10 @@ public class App {
         NodeManager nodeManager = new NodeManager(file);
         BLinkTree bLinkTree = new BLinkTree(nodeManager);
 
-        int SIZE = 2 * 1024;
+        int SIZE = 64 * 1024;
         Value[] toInsert = new Value[SIZE];
         for (int i = 0; i < SIZE; i++) {
-            toInsert[i] = new Value(("" + i).getBytes());
+            toInsert[i] = new Value((genRandomString() + "_" + i).getBytes());
             bLinkTree.addValue(toInsert[i], toInsert[i]);
         }
 
