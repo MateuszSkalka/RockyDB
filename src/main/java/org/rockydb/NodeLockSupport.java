@@ -31,7 +31,7 @@ public class NodeLockSupport {
     }
 
     public void unlockAllNodesForThread() {
-        long currentThread  =  Thread.currentThread().threadId();
+        long currentThread = Thread.currentThread().threadId();
         List<Long> nodesToUnlock = pageLocks.entrySet()
             .stream()
             .filter(entry -> entry.getValue().owner == currentThread)
