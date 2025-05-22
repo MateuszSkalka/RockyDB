@@ -1,8 +1,8 @@
 package org.rockydb;
 
+
 import org.rockydb.Node.CreationResult;
 
-import java.util.Arrays;
 import java.util.Stack;
 
 public class BLinkTree {
@@ -14,39 +14,24 @@ public class BLinkTree {
     public BLinkTree(NodeManager nodeManager) {
         this.nodeManager = nodeManager;
         this.nodeLock = new NodeLockSupport();
-        nodeManager.writeNode(new Node(
+        nodeManager.writeNode(new LeafNode(
             null,
-            new Value[]{new Value("T".getBytes())},
-            new long[]{-78, -1},
-            Node.LEAF,
-            -1));
+            new Value[]{new Value("root".getBytes())},
+            new Value[]{new Value("root".getBytes()), new Value(LongUtils.toByteArray(-1L))}));
         rootId = 1L;
         height = 1;
     }
 
-    protected long get(Value key) {
+    protected Value get(Value key) {
         Node node = nodeManager.readNode(rootId);
-
-        while (node.getType() != Node.LEAF) {
-            int idx = Arrays.binarySearch(node.getKeys(), key);
-            idx = idx < 0 ? -(idx + 1) : idx;
-            long nextId = node.getPointers()[idx];
-            if (nextId == -1) { // rightmost node
-                nextId = node.getPointers()[idx - 1];
-            }
-            node = nodeManager.readNode(nextId);
+        while (node.nextNode(key) != -1) {
+            node = nodeManager.readNode(node.nextNode(key));
         }
-
-        int idx = Arrays.binarySearch(node.getKeys(), key);
-        if (idx > -1) {
-            return node.getPointers()[idx];
-        } else {
-            return -1;
-        }
+        return ((LeafNode) node).getValueForKey(key);
     }
 
 
-    protected void addValue(Value key, long value) {
+    protected void addValue(Value key, Value value) {
         Stack<Long> nodes = new Stack<>();
         long currentId = rootId;
         int currentHeight = height;
@@ -56,62 +41,60 @@ public class BLinkTree {
             currentId = node.nextNode(key);
 
             if (!node.isRightLink(currentId)) {
-                nodes.push(node.getId());
+                nodes.push(node.id());
                 currentHeight--;
             }
         }
 
         nodeLock.lockNode(currentId);
-        Node leaf = nodeManager.readNode(currentId);
-        while (leaf.shouldGoRight(key)) {
+        LeafNode leaf = (LeafNode) nodeManager.readNode(currentId);
+        while (leaf.nextNode(key) != -1) {
             long prevId = currentId;
-            currentId = leaf.getLink();
+            currentId = leaf.nextNode(key);
             nodeLock.lockNode(currentId);
-            leaf = nodeManager.readNode(currentId);
+            leaf = (LeafNode) nodeManager.readNode(currentId);
             nodeLock.unlockNode(prevId);
         }
 
-        CreationResult result = leaf.withKey(key, value);
+        CreationResult result = leaf.copyWith(key, value);
 
         while (result.promotedValue() != null && !nodes.isEmpty()) {
             Node rightChild = nodeManager.writeNode(result.right());
-            result.left().setLink(rightChild.getId());
+            result.left().setLink(rightChild.id());
             Node leftChild = nodeManager.writeNode(result.left());
 
             currentId = nodes.pop();
             nodeLock.lockNode(currentId);
-            Node parent = nodeManager.readNode(currentId);
+            BranchNode parent = (BranchNode) nodeManager.readNode(currentId);
 
             while (parent.shouldGoRight(result.promotedValue())) {
                 long prevId = currentId;
-                currentId = parent.getLink();
+                currentId = parent.link();
                 nodeLock.lockNode(currentId);
-                parent = nodeManager.readNode(currentId);
+                parent = (BranchNode) nodeManager.readNode(currentId);
                 nodeLock.unlockNode(prevId);
             }
 
-            result = parent.withKey(result.promotedValue(), rightChild.getId());
-            nodeLock.unlockNode(leftChild.getId());
+            result = parent.copyWith(result.promotedValue(), rightChild.id(), rightChild.biggestKey());
+            nodeLock.unlockNode(leftChild.id());
         }
 
         if (result.promotedValue() == null) {
             nodeManager.writeNode(result.left());
-            nodeLock.unlockNode(result.left().getId());
+            nodeLock.unlockNode(result.left().id());
         } else {
             Node rightChild = nodeManager.writeNode(result.right());
-            result.left().setLink(rightChild.getId());
+            result.left().setLink(rightChild.id());
             Node leftChild = nodeManager.writeNode(result.left());
-            Node newRoot = nodeManager.writeNode(new Node(
+            Node newRoot = nodeManager.writeNode(new BranchNode(
                     null,
-                    new Value[]{result.promotedValue(), rightChild.getKeys()[rightChild.getKeys().length - 1]},
-                    new long[]{leftChild.getId(), rightChild.getId(), -1},
-                    Node.BRANCH,
-                    -1
+                    new Value[]{result.promotedValue(), rightChild.biggestKey()},
+                    new long[]{leftChild.id(), rightChild.id(), -1}
                 )
             );
-            rootId = newRoot.getId();
+            rootId = newRoot.id();
             height++;
-            nodeLock.unlockNode(leftChild.getId());
+            nodeLock.unlockNode(leftChild.id());
         }
     }
 

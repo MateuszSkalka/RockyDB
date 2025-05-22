@@ -3,8 +3,6 @@ package org.rockydb;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Random;
 
 public class App {
@@ -28,27 +26,21 @@ public class App {
         BLinkTree bLinkTree = new BLinkTree(nodeManager);
 
         int SIZE = 2 * 1024;
-        Map<Value, Long> map = new HashMap<>();
+        Value[] toInsert = new Value[SIZE];
         for (int i = 0; i < SIZE; i++) {
-            map.put(new Value((genRandomString() + i).getBytes()), (long) i);
-        }
-
-        for (var e : map.entrySet()) {
-            bLinkTree.addValue(e.getKey(), e.getValue());
+            toInsert[i] = new Value(("" + i).getBytes());
+            bLinkTree.addValue(toInsert[i], toInsert[i]);
         }
 
         int fails = 0;
-        long start = System.currentTimeMillis();
-        for (var e : map.entrySet()) {
-            var r = bLinkTree.get(e.getKey());
-            if (r != e.getValue()) {
-                System.out.println("Expected = " + e.getValue() + " got = " + r);
+
+        for (int i = 0; i < SIZE; i++) {
+            var res = bLinkTree.get(toInsert[i]);
+            if (res.compareTo(toInsert[i]) != 0) {
+                System.out.println("Expected:  " + new String(toInsert[i].bytes()) + " Got:  " + new String(res.bytes()));
+                fails++;
             }
         }
-        long stop = System.currentTimeMillis();
-
-        System.out.println("Read " + SIZE + " values in: " + (stop - start) + " millis");
-        System.out.println("FAILED:  " + fails);
-
+        System.out.println("N.O. ERRORS: " + fails);
     }
 }

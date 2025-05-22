@@ -5,14 +5,11 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.util.Arrays;
-import java.util.List;
-import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class NodeManager implements AutoCloseable {
     public static final int PAGE_SIZE = 4 * 1024;
-    public static final int PAGE_HEADERS_SIZE = 9;
+    public static final int PAGE_HEADERS_SIZE = 5;
     public static final int KEY_PREFIX_SIZE = 4;
     public static final int VALUE_POINTER_SIZE = 8;
     private final RandomAccessFile raf;
@@ -34,60 +31,112 @@ public class NodeManager implements AutoCloseable {
 
             byte nodeType = buffer.get();
             int elemCount = buffer.getInt();
-            int pageSize = buffer.getInt();
 
-            Value[] keys = new Value[elemCount];
-            int pSize =  elemCount + 1;
-            long[] valuePointers = new long[pSize];
-
-            for (int i = 0; i < elemCount; i++) {
-                int nextValueSize = buffer.getInt();
-                byte[] bytes = new byte[nextValueSize];
-                buffer.get(bytes);
-                keys[i] = new Value(bytes);
-            }
-            for (int i = 0; i < valuePointers.length; i++) {
-                valuePointers[i] = buffer.getLong();
-            }
-
-            return new Node(id, keys, valuePointers, nodeType, pageSize);
+            return switch (nodeType) {
+                case Node.BRANCH -> readBranchNode(id, buffer, elemCount);
+                case Node.LEAF -> readLeafNode(id, buffer, elemCount);
+                default -> throw new RuntimeException();
+            };
         } catch (IOException ex) {
+            throw new RuntimeException();
+        }
+    }
+
+    private LeafNode readLeafNode(long id, ByteBuffer buffer, int elemCount) {
+        Value[] keys = readValueArray(buffer, elemCount);
+        Value[] values = readValueArray(buffer, elemCount + 1);
+        return new LeafNode(id, keys, values);
+    }
+
+    private BranchNode readBranchNode(long id, ByteBuffer buffer, int elemCount) {
+        Value[] keys = readValueArray(buffer, elemCount);
+        long[] values = readLongArray(buffer, elemCount + 1);
+        return new BranchNode(id, keys, values);
+    }
+
+    private Value[] readValueArray(ByteBuffer buffer, int size) {
+        Value[] arr = new Value[size];
+        for (int i = 0; i < arr.length; i++) {
+            int nextSize = buffer.getInt();
+            byte[] bytes = new byte[nextSize];
+            buffer.get(bytes);
+            arr[i] = new Value(bytes);
+        }
+        return arr;
+    }
+
+    private long[] readLongArray(ByteBuffer buffer, int size) {
+        long[] arr = new long[size];
+        for (int i = 0; i < arr.length; i++) {
+            arr[i] = buffer.getLong();
+        }
+        return arr;
+    }
+
+
+    public LeafNode writeNode(LeafNode node) {
+        try {
+            ByteBuffer buffer = createBuffer(node.type(), node.getKeys(), node.getValues());
+            long nodeId = node.id() == null ? fileHeaders.incrementAndGetPageCount() : node.id();
+            buffer.rewind();
+            fileChannel.write(buffer, PAGE_SIZE * nodeId);
+            return new LeafNode(nodeId, node.getKeys(), node.getValues());
+        } catch (IOException e) {
             throw new RuntimeException();
         }
     }
 
     public Node writeNode(Node node) {
         try {
-            ByteBuffer buffer = createBuffer(node.getType(), node.getKeys(), node.getPointers());
-            long nodeId = node.getId() == null ? fileHeaders.incrementAndGetPageCount() : node.getId();
-            int size = buffer.position();
+            ByteBuffer buffer;
+            if (node instanceof BranchNode branchNode) {
+                buffer = createBuffer(node.type(), branchNode.getKeys(), branchNode.getPointers());
+            } else if (node instanceof LeafNode leafNode) {
+                buffer = createBuffer(node.type(), leafNode.getKeys(), leafNode.getValues());
+            } else {
+                throw new IllegalArgumentException();
+            }
+
+            long nodeId = node.id() == null ? fileHeaders.incrementAndGetPageCount() : node.id();
             buffer.rewind();
             fileChannel.write(buffer, PAGE_SIZE * nodeId);
-            return new Node(nodeId, node.getKeys(), node.getPointers(), node.getType(), size);
+
+            node.setId(nodeId);
+            return node;
         } catch (IOException e) {
             throw new RuntimeException();
         }
     }
 
-    private ByteBuffer createBuffer(byte type, Value[] keys, long[] valuePointers) {
+    private ByteBuffer createBuffer(byte type, Value[] keys, long[] pointers) {
         ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
         buffer.put(type);
         buffer.putInt(keys.length);
-        buffer.putInt(-1);
 
         for (Value key : keys) {
-            buffer.putInt(key.val().length);
-            buffer.put(key.val());
+            buffer.putInt(key.bytes().length);
+            buffer.put(key.bytes());
         }
-        for (long valuePointer : valuePointers) {
+        for (long valuePointer : pointers) {
             buffer.putLong(valuePointer);
         }
-        buffer.putInt(5, buffer.position());
         return buffer;
     }
 
-    public boolean anyNodeExists() {
-        return fileHeaders.pagesCount.get() > 0L;
+    private ByteBuffer createBuffer(byte type, Value[] keys, Value[] values) {
+        ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
+        buffer.put(type);
+        buffer.putInt(keys.length);
+
+        for (Value key : keys) {
+            buffer.putInt(key.bytes().length);
+            buffer.put(key.bytes());
+        }
+        for (Value key : values) {
+            buffer.putInt(key.bytes().length);
+            buffer.put(key.bytes());
+        }
+        return buffer;
     }
 
     @Override
