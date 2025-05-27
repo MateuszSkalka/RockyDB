@@ -15,31 +15,35 @@ public class NodeManager implements AutoCloseable {
     private final RandomAccessFile raf;
     private final FileChannel fileChannel;
     private final FileHeaders fileHeaders;
+    private final StripedLock stripedLock;
 
     public NodeManager(File dbFile) throws IOException {
         raf = new RandomAccessFile(dbFile, "rw");
         this.fileChannel = raf.getChannel();
         this.fileHeaders = new FileHeaders();
+        this.stripedLock = new StripedLock();
 
     }
 
     public Node readNode(long id) {
-        try {
-            ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
-            fileChannel.read(buffer, id * PAGE_SIZE);
-            buffer.rewind();
+        ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
+        stripedLock.runInReadLock(id, () -> {
+            try {
+                fileChannel.read(buffer, id * PAGE_SIZE);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        buffer.rewind();
 
-            byte nodeType = buffer.get();
-            int elemCount = buffer.getInt();
+        byte nodeType = buffer.get();
+        int elemCount = buffer.getInt();
 
-            return switch (nodeType) {
-                case Node.BRANCH -> readBranchNode(id, buffer, elemCount);
-                case Node.LEAF -> readLeafNode(id, buffer, elemCount);
-                default -> throw new RuntimeException();
-            };
-        } catch (IOException ex) {
-            throw new RuntimeException();
-        }
+        return switch (nodeType) {
+            case Node.BRANCH -> readBranchNode(id, buffer, elemCount);
+            case Node.LEAF -> readLeafNode(id, buffer, elemCount);
+            default -> throw new RuntimeException();
+        };
     }
 
     private LeafNode readLeafNode(long id, ByteBuffer buffer, int elemCount) {
@@ -75,15 +79,17 @@ public class NodeManager implements AutoCloseable {
 
 
     public LeafNode writeNode(LeafNode node) {
-        try {
-            ByteBuffer buffer = createBuffer(node.type(), node.getKeys(), node.getValues());
-            long nodeId = node.id() == null ? fileHeaders.incrementAndGetPageCount() : node.id();
-            buffer.rewind();
-            fileChannel.write(buffer, PAGE_SIZE * nodeId);
-            return new LeafNode(nodeId, node.getKeys(), node.getValues());
-        } catch (IOException e) {
-            throw new RuntimeException();
-        }
+        ByteBuffer buffer = createBuffer(node.type(), node.getKeys(), node.getValues());
+        long nodeId = node.id() == null ? fileHeaders.incrementAndGetPageCount() : node.id();
+        buffer.rewind();
+        stripedLock.runInWriteLock(nodeId, () -> {
+            try {
+                fileChannel.write(buffer, PAGE_SIZE * nodeId);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        return new LeafNode(nodeId, node.getKeys(), node.getValues());
     }
 
     public Node writeNode(Node node) {

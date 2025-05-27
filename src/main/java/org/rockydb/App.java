@@ -11,8 +11,8 @@ public class App {
     static String SALTCHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
     static Random random = new Random(1234L);
 
-    public static String genRandomString() {
-        int r = 8 + random.nextInt(8);
+    public static String genRandomString(int min, int max) {
+        int r = min + random.nextInt(max);
         char[] chars = new char[r];
         for (int i = 0; i < chars.length; i++) {
             chars[i] = SALTCHARS.charAt(random.nextInt(SALTCHARS.length()));
@@ -21,16 +21,18 @@ public class App {
     }
 
     public static void main(String[] args) throws IOException, InterruptedException {
-        Path path = Path.of("./super.db");
+        Path path = Path.of("./super14.db");
         File file = path.toFile();
 
         NodeManager nodeManager = new NodeManager(file);
         BLinkTree bLinkTree = new BLinkTree(nodeManager);
 
         int SIZE = 256 * 1024;
-        Value[] toInsert = new Value[SIZE];
+        Value[] keys = new Value[SIZE];
+        Value[] vals = new Value[SIZE];
         for (int i = 0; i < SIZE; i++) {
-            toInsert[i] = new Value((genRandomString() + "_" + i).getBytes());
+            keys[i] = new Value((genRandomString(8, 16) + "_" + i).getBytes());
+            vals[i] = new Value((genRandomString(128, 256) + "_" + i).getBytes());
         }
 
         int fails = 0;
@@ -44,7 +46,7 @@ public class App {
             int offset = i * SIZE / THREADS;
             exService.execute(() -> {
                 for (int j = offset; j < Math.max(SIZE, offset + SIZE / THREADS); j++) {
-                    bLinkTree.addValue(toInsert[j], toInsert[j]);
+                    bLinkTree.addValue(keys[j], vals[j]);
                 }
                 cdl.countDown();
             });
@@ -57,12 +59,12 @@ public class App {
 
         start = System.currentTimeMillis();
         for (int i = 0; i < SIZE; i++) {
-            var res = bLinkTree.get(toInsert[i]);
+            var res = bLinkTree.get(keys[i]);
             if (res == null) {
-                System.out.println("Expected:  " + new String(toInsert[i].bytes()) + " Got:  null");
+                System.out.println("Expected:  " + new String(vals[i].bytes()) + " Got:  null");
                 fails++;
-            } else if (res.compareTo(toInsert[i]) != 0) {
-                System.out.println("Expected:  " + new String(toInsert[i].bytes()) + " Got:  " + new String(res.bytes()));
+            } else if (res.compareTo(vals[i]) != 0) {
+                System.out.println("Expected:  " + new String(vals[i].bytes()) + " Got:  " + new String(res.bytes()));
                 fails++;
             }
         }
