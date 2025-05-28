@@ -8,10 +8,12 @@ public class BranchNode extends Node {
 
     public BranchNode(
         Long id,
+        boolean isLeftmostNode,
+        int height,
         Value[] keys,
         long[] valuePointers
     ) {
-        super(id, BRANCH);
+        super(id, false, isLeftmostNode, height);
         this.keys = keys;
         this.pointers = valuePointers;
     }
@@ -35,7 +37,7 @@ public class BranchNode extends Node {
         if (needsSplit(newSize)) {
             return split(keys, pointers, newSize);
         } else {
-            return new CreationResult(new BranchNode(id(), keys, pointers), null, null);
+            return new CreationResult(new BranchNode(id(), isLeftmostNode(), height(), keys, pointers), null, null);
         }
     }
 
@@ -66,8 +68,8 @@ public class BranchNode extends Node {
         System.arraycopy(pointers, leftPointers.length - 1, rightPointers, 0, rightPointers.length);
 
         return new CreationResult(
-            new BranchNode(id(), leftKeys, leftPointers),
-            new BranchNode(null, rightKeys, rightPointers),
+            new BranchNode(id(), isLeftmostNode(), height(), leftKeys, leftPointers),
+            new BranchNode(null, false, height(), rightKeys, rightPointers),
             promotedValue
         );
     }

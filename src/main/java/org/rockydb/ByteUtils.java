@@ -1,6 +1,25 @@
 package org.rockydb;
 
-public class LongUtils {
+public class ByteUtils {
+
+    public static boolean readIsLeafFlag(byte flags) {
+        return (flags & 1) > 0;
+    }
+
+    public static boolean readIsLeftmostNodeFlag(byte flags) {
+        return (flags & 2) > 0;
+    }
+
+    public static byte createFlags(boolean isLeaf, boolean isLeftmostNode) {
+        byte flags = 0;
+        if (isLeaf) {
+            flags |= 1;
+        }
+        if (isLeftmostNode) {
+            flags |= 2;
+        }
+        return flags;
+    }
 
     public static byte[] toByteArray(long val) {
         return new byte[]{
@@ -16,9 +35,6 @@ public class LongUtils {
     }
 
     public static long toLong(byte[] val) {
-        if (val.length == 1) {
-            System.out.println("here");
-        }
         return ((long) val[7] << 56)
             | ((long) val[6] & 0xff) << 48
             | ((long) val[5] & 0xff) << 40

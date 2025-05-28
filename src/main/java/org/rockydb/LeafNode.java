@@ -8,10 +8,12 @@ public class LeafNode extends Node {
 
     public LeafNode(
         Long id,
+        boolean isLeftmostNode,
+        int height,
         Value[] keys,
         Value[] values
     ) {
-        super(id, LEAF);
+        super(id, true, isLeftmostNode, height);
         this.keys = keys;
         this.values = values;
     }
@@ -40,7 +42,7 @@ public class LeafNode extends Node {
         if (needsSplit(newSize)) {
             return split(keys, values, newSize);
         } else {
-            return new CreationResult(new LeafNode(id(), keys, values), null, null);
+            return new CreationResult(new LeafNode(id(), isLeftmostNode(), height(), keys, values), null, null);
         }
     }
 
@@ -71,8 +73,8 @@ public class LeafNode extends Node {
         System.arraycopy(values, leftValues.length - 1, rightValues, 0, rightValues.length);
 
         return new CreationResult(
-            new LeafNode(id(), leftKeys, leftValues),
-            new LeafNode(null, rightKeys, rightValues),
+            new LeafNode(id(), isLeftmostNode(), height(), leftKeys, leftValues),
+            new LeafNode(null, false, height(), rightKeys, rightValues),
             promotedValue
         );
     }
@@ -84,7 +86,7 @@ public class LeafNode extends Node {
 
     @Override
     public long link() {
-        return LongUtils.toLong(values[values.length - 1].bytes());
+        return ByteUtils.toLong(values[values.length - 1].bytes());
     }
 
     @Override
@@ -93,7 +95,7 @@ public class LeafNode extends Node {
     }
 
     public void setLink(long linkId) {
-        values[values.length - 1] = new Value(LongUtils.toByteArray(linkId));
+        values[values.length - 1] = new Value(ByteUtils.toByteArray(linkId));
     }
 
     public Value[] getKeys() {

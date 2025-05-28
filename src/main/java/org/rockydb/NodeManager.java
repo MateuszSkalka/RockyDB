@@ -7,6 +7,9 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static org.rockydb.ByteUtils.readIsLeafFlag;
+import static org.rockydb.ByteUtils.readIsLeftmostNodeFlag;
+
 public class NodeManager implements AutoCloseable {
     public static final int PAGE_SIZE = 4 * 1024;
     public static final int PAGE_HEADERS_SIZE = 5;
@@ -36,26 +39,29 @@ public class NodeManager implements AutoCloseable {
         });
         buffer.rewind();
 
-        byte nodeType = buffer.get();
-        int elemCount = buffer.getInt();
+        byte flags = buffer.get();
+        boolean isLeaf = readIsLeafFlag(flags);
+        boolean isLeftmostNode = readIsLeftmostNodeFlag(flags);
+        int elemCount = buffer.getShort();
+        int height = buffer.getShort();
 
-        return switch (nodeType) {
-            case Node.BRANCH -> readBranchNode(id, buffer, elemCount);
-            case Node.LEAF -> readLeafNode(id, buffer, elemCount);
-            default -> throw new RuntimeException();
-        };
+        if (isLeaf) {
+            return readLeafNode(id, isLeftmostNode, height, buffer, elemCount);
+        } else {
+            return readBranchNode(id, isLeftmostNode, height, buffer, elemCount);
+        }
     }
 
-    private LeafNode readLeafNode(long id, ByteBuffer buffer, int elemCount) {
+    private LeafNode readLeafNode(long id, boolean isLeftmost, int height, ByteBuffer buffer, int elemCount) {
         Value[] keys = readValueArray(buffer, elemCount);
         Value[] values = readValueArray(buffer, elemCount + 1);
-        return new LeafNode(id, keys, values);
+        return new LeafNode(id, isLeftmost, height, keys, values);
     }
 
-    private BranchNode readBranchNode(long id, ByteBuffer buffer, int elemCount) {
+    private BranchNode readBranchNode(long id, boolean isLeftmost, int height, ByteBuffer buffer, int elemCount) {
         Value[] keys = readValueArray(buffer, elemCount);
         long[] values = readLongArray(buffer, elemCount + 1);
-        return new BranchNode(id, keys, values);
+        return new BranchNode(id, isLeftmost, height, keys, values);
     }
 
     private Value[] readValueArray(ByteBuffer buffer, int size) {
@@ -79,7 +85,7 @@ public class NodeManager implements AutoCloseable {
 
 
     public LeafNode writeNode(LeafNode node) {
-        ByteBuffer buffer = createBuffer(node.type(), node.getKeys(), node.getValues());
+        ByteBuffer buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), node.getKeys(), node.getValues());
         long nodeId = node.id() == null ? fileHeaders.incrementAndGetPageCount() : node.id();
         buffer.rewind();
         stripedLock.runInWriteLock(nodeId, () -> {
@@ -89,16 +95,16 @@ public class NodeManager implements AutoCloseable {
                 throw new RuntimeException(e);
             }
         });
-        return new LeafNode(nodeId, node.getKeys(), node.getValues());
+        return new LeafNode(nodeId, node.isLeftmostNode(), node.height(), node.getKeys(), node.getValues());
     }
 
     public Node writeNode(Node node) {
         try {
             ByteBuffer buffer;
             if (node instanceof BranchNode branchNode) {
-                buffer = createBuffer(node.type(), branchNode.getKeys(), branchNode.getPointers());
+                buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), branchNode.getKeys(), branchNode.getPointers());
             } else if (node instanceof LeafNode leafNode) {
-                buffer = createBuffer(node.type(), leafNode.getKeys(), leafNode.getValues());
+                buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), leafNode.getKeys(), leafNode.getValues());
             } else {
                 throw new IllegalArgumentException();
             }
@@ -114,10 +120,8 @@ public class NodeManager implements AutoCloseable {
         }
     }
 
-    private ByteBuffer createBuffer(byte type, Value[] keys, long[] pointers) {
-        ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
-        buffer.put(type);
-        buffer.putInt(keys.length);
+    private ByteBuffer createBuffer(boolean isLeaf, boolean isLeftmost, int height, Value[] keys, long[] pointers) {
+        ByteBuffer buffer = createBuffer(isLeaf, isLeftmost, keys.length, height);
 
         for (Value key : keys) {
             buffer.putInt(key.bytes().length);
@@ -129,10 +133,8 @@ public class NodeManager implements AutoCloseable {
         return buffer;
     }
 
-    private ByteBuffer createBuffer(byte type, Value[] keys, Value[] values) {
-        ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
-        buffer.put(type);
-        buffer.putInt(keys.length);
+    private ByteBuffer createBuffer(boolean isLeaf, boolean isLeftmost, int height, Value[] keys, Value[] values) {
+        ByteBuffer buffer = createBuffer(isLeaf, isLeftmost, keys.length, height);
 
         for (Value key : keys) {
             buffer.putInt(key.bytes().length);
@@ -142,6 +144,17 @@ public class NodeManager implements AutoCloseable {
             buffer.putInt(key.bytes().length);
             buffer.put(key.bytes());
         }
+        return buffer;
+    }
+
+    private ByteBuffer createBuffer(boolean isLeaf, boolean isLeftmost, int numOfKeys, int height) {
+        ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
+        // is leaf flag
+        buffer.put(ByteUtils.createFlags(isLeaf, isLeftmost));
+        //number of keys
+        buffer.putShort((short) numOfKeys);
+        // height
+        buffer.putShort((short) height);
         return buffer;
     }
 

@@ -21,7 +21,7 @@ public class App {
     }
 
     public static void main(String[] args) throws IOException, InterruptedException {
-        Path path = Path.of("./super14.db");
+        Path path = Path.of("./super99.db");
         File file = path.toFile();
 
         NodeManager nodeManager = new NodeManager(file);

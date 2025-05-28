@@ -1,15 +1,17 @@
 package org.rockydb;
 
 public abstract class Node {
-    public static final byte BRANCH = 1;
-    public static final byte LEAF = 2;
     public static final int MAX_NODE_SIZE = NodeManager.PAGE_SIZE - NodeManager.PAGE_HEADERS_SIZE;
     private Long id;
-    private final byte type;
+    private final boolean isLeaf;
+    private final boolean isLeftmostNode;
+    private final int height;
 
-    public Node(Long id, byte type) {
+    public Node(Long id, boolean isLeaf, boolean isLeftmostNode, int height) {
         this.id = id;
-        this.type = type;
+        this.isLeaf = isLeaf;
+        this.isLeftmostNode = isLeftmostNode;
+        this.height = height;
     }
 
     public abstract long nextNode(Value key);
@@ -24,8 +26,24 @@ public abstract class Node {
 
     public abstract Value biggestKey();
 
-    public byte type() {
-        return type;
+    protected boolean isRightmostNode() {
+        return link() == -1;
+    }
+
+    public int height() {
+        return height;
+    }
+
+    protected boolean isLeftmostNode() {
+        return isLeftmostNode;
+    }
+
+    public boolean isRoot() {
+        return isLeftmostNode() && isRightmostNode();
+    }
+
+    public boolean isLeaf() {
+        return isLeaf;
     }
 
     public Long id() {
