@@ -32,7 +32,7 @@ public class App {
         Value[] vals = new Value[SIZE];
         for (int i = 0; i < SIZE; i++) {
             keys[i] = new Value((genRandomString(8, 16) + "_" + i).getBytes());
-            vals[i] = new Value((genRandomString(128, 256) + "_" + i).getBytes());
+            vals[i] = new Value((genRandomString(64, 128) + "_" + i).getBytes());
         }
 
         int fails = 0;

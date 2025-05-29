@@ -11,7 +11,7 @@ import static org.rockydb.ByteUtils.readIsLeafFlag;
 import static org.rockydb.ByteUtils.readIsLeftmostNodeFlag;
 
 public class NodeManager implements AutoCloseable {
-    public static final int PAGE_SIZE = 4 * 1024;
+    public static final int PAGE_SIZE = 8 * 1024;
     public static final int PAGE_HEADERS_SIZE = 5;
     public static final int KEY_PREFIX_SIZE = 4;
     public static final int VALUE_POINTER_SIZE = 8;
@@ -25,7 +25,28 @@ public class NodeManager implements AutoCloseable {
         this.fileChannel = raf.getChannel();
         this.fileHeaders = new FileHeaders();
         this.stripedLock = new StripedLock();
+    }
 
+    public Node writeNode(Node node) {
+        try {
+            ByteBuffer buffer;
+            if (node instanceof BranchNode branchNode) {
+                buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), branchNode.getKeys(), branchNode.getPointers());
+            } else if (node instanceof LeafNode leafNode) {
+                buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), leafNode.getKeys(), leafNode.getValues());
+            } else {
+                throw new IllegalArgumentException();
+            }
+
+            long nodeId = node.id() == null ? fileHeaders.incrementAndGetPageCount() : node.id();
+            buffer.rewind();
+            fileChannel.write(buffer, PAGE_SIZE * nodeId);
+
+            node.setId(nodeId);
+            return node;
+        } catch (IOException e) {
+            throw new RuntimeException();
+        }
     }
 
     public Node readNode(long id) {
@@ -84,41 +105,6 @@ public class NodeManager implements AutoCloseable {
     }
 
 
-    public LeafNode writeNode(LeafNode node) {
-        ByteBuffer buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), node.getKeys(), node.getValues());
-        long nodeId = node.id() == null ? fileHeaders.incrementAndGetPageCount() : node.id();
-        buffer.rewind();
-        stripedLock.runInWriteLock(nodeId, () -> {
-            try {
-                fileChannel.write(buffer, PAGE_SIZE * nodeId);
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        });
-        return new LeafNode(nodeId, node.isLeftmostNode(), node.height(), node.getKeys(), node.getValues());
-    }
-
-    public Node writeNode(Node node) {
-        try {
-            ByteBuffer buffer;
-            if (node instanceof BranchNode branchNode) {
-                buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), branchNode.getKeys(), branchNode.getPointers());
-            } else if (node instanceof LeafNode leafNode) {
-                buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), leafNode.getKeys(), leafNode.getValues());
-            } else {
-                throw new IllegalArgumentException();
-            }
-
-            long nodeId = node.id() == null ? fileHeaders.incrementAndGetPageCount() : node.id();
-            buffer.rewind();
-            fileChannel.write(buffer, PAGE_SIZE * nodeId);
-
-            node.setId(nodeId);
-            return node;
-        } catch (IOException e) {
-            throw new RuntimeException();
-        }
-    }
 
     private ByteBuffer createBuffer(boolean isLeaf, boolean isLeftmost, int height, Value[] keys, long[] pointers) {
         ByteBuffer buffer = createBuffer(isLeaf, isLeftmost, keys.length, height);

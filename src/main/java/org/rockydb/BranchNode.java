@@ -18,6 +18,46 @@ public class BranchNode extends Node {
         this.pointers = valuePointers;
     }
 
+    @Override
+    public long nextNode(Value key) {
+        int idx = Arrays.binarySearch(keys, key);
+        idx = idx < 0 ? -(idx + 1) : idx;
+        return pointers[idx] == -1 ? pointers[idx - 1] : pointers[idx];
+    }
+
+    @Override
+    public boolean isRightLink(long nodeId) {
+        return pointers[pointers.length - 1] == nodeId;
+    }
+
+    @Override
+    public boolean shouldGoRight(Value key) {
+        return keys[keys.length - 1].compareTo(key) < 0 && pointers[pointers.length - 1] != -1;
+    }
+
+    @Override
+    public long link() {
+        return pointers[pointers.length - 1];
+    }
+
+    @Override
+    public void setLink(long linkId) {
+        pointers[pointers.length - 1] = linkId;
+    }
+
+    @Override
+    public Value biggestKey() {
+        return keys[keys.length - 1];
+    }
+
+    public Value[] getKeys() {
+        return keys;
+    }
+
+    public long[] getPointers() {
+        return pointers;
+    }
+
     public CreationResult copyWith(Value key, long pointer, Value newMax) {
         compareAndSetBiggestKey(newMax);
         int idx = Arrays.binarySearch(keys, key);
@@ -74,38 +114,6 @@ public class BranchNode extends Node {
         );
     }
 
-    @Override
-    public long nextNode(Value key) {
-        int idx = Arrays.binarySearch(keys, key);
-        idx = idx < 0 ? -(idx + 1) : idx;
-        return pointers[idx] == -1 ? pointers[idx - 1] : pointers[idx];
-    }
-
-    @Override
-    public boolean isRightLink(long nodeId) {
-        return pointers[pointers.length - 1] == nodeId;
-    }
-
-    @Override
-    public boolean shouldGoRight(Value key) {
-        return keys[keys.length - 1].compareTo(key) < 0 && pointers[pointers.length - 1] != -1;
-    }
-
-    @Override
-    public long link() {
-        return pointers[pointers.length - 1];
-    }
-
-    @Override
-    public void setLink(long linkId) {
-        pointers[pointers.length - 1] = linkId;
-    }
-
-    @Override
-    public Value biggestKey() {
-        return keys[keys.length - 1];
-    }
-
     private void compareAndSetBiggestKey(Value key) {
         if (biggestKey().compareTo(key) < 0) {
             keys[keys.length - 1] = key;
@@ -131,13 +139,5 @@ public class BranchNode extends Node {
     private int sizeOfCell(int keyIdx, Value[] keys) {
         return NodeManager.KEY_PREFIX_SIZE + keys[keyIdx].bytes().length + NodeManager.VALUE_POINTER_SIZE;
 
-    }
-
-    public Value[] getKeys() {
-        return keys;
-    }
-
-    public long[] getPointers() {
-        return pointers;
     }
 }

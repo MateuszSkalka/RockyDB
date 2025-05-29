@@ -26,16 +26,8 @@ public abstract class Node {
 
     public abstract Value biggestKey();
 
-    protected boolean isRightmostNode() {
-        return link() == -1;
-    }
-
     public int height() {
         return height;
-    }
-
-    protected boolean isLeftmostNode() {
-        return isLeftmostNode;
     }
 
     public boolean isRoot() {
@@ -56,6 +48,14 @@ public abstract class Node {
 
     public void setId(long id) {
         this.id = id;
+    }
+
+    protected boolean isRightmostNode() {
+        return link() == -1;
+    }
+
+    protected boolean isLeftmostNode() {
+        return isLeftmostNode;
     }
 
     protected int size(Value[] array) {

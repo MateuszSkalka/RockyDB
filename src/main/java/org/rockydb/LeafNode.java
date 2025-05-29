@@ -18,6 +18,45 @@ public class LeafNode extends Node {
         this.values = values;
     }
 
+    @Override
+    public boolean shouldGoRight(Value key) {
+        return keys[keys.length - 1].compareTo(key) < 0 && link() != -1;
+    }
+
+    @Override
+    public long link() {
+        return ByteUtils.toLong(values[values.length - 1].bytes());
+    }
+
+    @Override
+    public Value biggestKey() {
+        return keys[keys.length - 1];
+    }
+
+    @Override
+    public void setLink(long linkId) {
+        values[values.length - 1] = new Value(ByteUtils.toByteArray(linkId));
+    }
+
+    @Override
+    public long nextNode(Value key) {
+        if (shouldGoRight(key)) return link();
+        else return -1;
+    }
+
+    @Override
+    public boolean isRightLink(long nodeId) {
+        return link() == nodeId;
+    }
+
+    public Value[] getKeys() {
+        return keys;
+    }
+
+    public Value[] getValues() {
+        return values;
+    }
+
     public Value getValueForKey(Value key) {
         int idx = Arrays.binarySearch(keys, key);
         if (idx > -1) return values[idx];
@@ -77,44 +116,6 @@ public class LeafNode extends Node {
             new LeafNode(null, false, height(), rightKeys, rightValues),
             promotedValue
         );
-    }
-
-    @Override
-    public boolean shouldGoRight(Value key) {
-        return keys[keys.length - 1].compareTo(key) < 0 && link() != -1;
-    }
-
-    @Override
-    public long link() {
-        return ByteUtils.toLong(values[values.length - 1].bytes());
-    }
-
-    @Override
-    public Value biggestKey() {
-        return keys[keys.length - 1];
-    }
-
-    public void setLink(long linkId) {
-        values[values.length - 1] = new Value(ByteUtils.toByteArray(linkId));
-    }
-
-    public Value[] getKeys() {
-        return keys;
-    }
-
-    public Value[] getValues() {
-        return values;
-    }
-
-    @Override
-    public long nextNode(Value key) {
-        if (shouldGoRight(key)) return link();
-        else return -1;
-    }
-
-    @Override
-    public boolean isRightLink(long nodeId) {
-        return link() == nodeId;
     }
 
     private Value[] insert(Value[] array, Value e, int idx) {

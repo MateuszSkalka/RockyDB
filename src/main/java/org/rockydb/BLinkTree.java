@@ -3,15 +3,17 @@ package org.rockydb;
 
 import org.rockydb.Node.CreationResult;
 
-import java.util.LinkedList;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Stack;
 import java.util.concurrent.locks.LockSupport;
 
 public class BLinkTree {
     private final NodeManager nodeManager;
     private final PerNodeLock nodeLock;
+    private final List<Long> leftmostNodes = Collections.synchronizedList(new ArrayList<>());
     private volatile long rootId;
-    private final LinkedList<Long> leftmostNodes = new LinkedList<>();
 
     public BLinkTree(NodeManager nodeManager) {
         this.nodeManager = nodeManager;
