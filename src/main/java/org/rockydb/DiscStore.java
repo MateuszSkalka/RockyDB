@@ -11,10 +11,6 @@ import static org.rockydb.ByteUtils.readIsLeafFlag;
 import static org.rockydb.ByteUtils.readIsLeftmostNodeFlag;
 
 public class DiscStore implements AutoCloseable, Store {
-    public static final int PAGE_SIZE = 8 * 1024;
-    public static final int PAGE_HEADERS_SIZE = 5;
-    public static final int KEY_PREFIX_SIZE = 4;
-    public static final int VALUE_POINTER_SIZE = 8;
     private static final long TREE_ROOT_FILE_POSITION = 0;
 
     private final RandomAccessFile raf;
