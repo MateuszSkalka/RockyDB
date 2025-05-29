@@ -3,60 +3,51 @@ package org.rockydb;
 
 import org.rockydb.Node.CreationResult;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.Map;
 import java.util.Stack;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.LockSupport;
 
 public class BLinkTree {
-    private final NodeManager nodeManager;
+    private final Store store;
     private final PerNodeLock nodeLock;
-    private final List<Long> leftmostNodes = Collections.synchronizedList(new ArrayList<>());
-    private volatile long rootId;
+    private final Map<Integer, Long> leftmostNodes = new ConcurrentHashMap<>();
 
-    public BLinkTree(NodeManager nodeManager) {
-        this.nodeManager = nodeManager;
+    public BLinkTree(Store store) {
+        this.store = store;
         this.nodeLock = new PerNodeLock();
-        nodeManager.writeNode(new LeafNode(
-            null,
-            true,
-            (short) 1,
-            new Value[]{new Value("9999".getBytes())},
-            new Value[]{new Value("9999".getBytes()), new Value(ByteUtils.toByteArray(-1L))}));
-        this.rootId = 1L;
-        leftmostNodes.add(1L);
     }
 
-    protected Value get(Value key) {
-        Node node = nodeManager.readNode(rootId);
+    public Value get(Value key) {
+        long rootId = store.rootId();
+        Node node = store.readNode(rootId);
         while (node.nextNode(key) != -1) {
-            node = nodeManager.readNode(node.nextNode(key));
+            node = store.readNode(node.nextNode(key));
         }
         return ((LeafNode) node).getValueForKey(key);
     }
 
 
-    protected void addValue(Value key, Value value) {
+    public void addValue(Value key, Value value) {
         Stack<Long> nodes = new Stack<>();
-        long currentId = rootId;
-        Node node = nodeManager.readNode(currentId);
+        long currentId = store.rootId();
+        Node node = store.readNode(currentId);
         while (!node.isLeaf()) {
             currentId = node.nextNode(key);
             if (!node.isRightLink(currentId)) {
                 nodes.push(node.id());
             }
-            node = nodeManager.readNode(currentId);
+            node = store.readNode(currentId);
         }
 
         nodeLock.lockNode(currentId);
-        LeafNode leaf = (LeafNode) nodeManager.readNode(currentId);
+        LeafNode leaf = (LeafNode) store.readNode(currentId);
 
         while (leaf.nextNode(key) != -1) {
             long prevId = currentId;
             currentId = leaf.nextNode(key);
             nodeLock.lockNode(currentId);
-            leaf = (LeafNode) nodeManager.readNode(currentId);
+            leaf = (LeafNode) store.readNode(currentId);
             nodeLock.unlockNode(prevId);
         }
 
@@ -64,11 +55,11 @@ public class BLinkTree {
         CreationResult result = leaf.copyWith(key, value);
 
         while (result.promotedValue() != null) {
-            Node rightChild = nodeManager.writeNode(result.right());
+            Node rightChild = store.writeNode(result.right());
             result.left().setLink(rightChild.id());
-            Node leftChild = nodeManager.writeNode(result.left());
+            Node leftChild = store.writeNode(result.left());
             if (isRoot) {
-                createNewRoot(leftChild, rightChild, result.promotedValue());
+                createNewBranchRoot(leftChild, rightChild, result.promotedValue());
                 nodeLock.unlockNode(leftChild.id());
                 result = null;
                 break;
@@ -77,17 +68,17 @@ public class BLinkTree {
             if (!nodes.isEmpty()) {
                 parentId = nodes.pop();
             } else {
-                parentId = getLeftmostNodeAtHeight(leftChild.height());
+                parentId = getLeftmostNodeAtHeight(leftChild.height() + 1);
             }
 
             nodeLock.lockNode(parentId);
-            BranchNode parent = (BranchNode) nodeManager.readNode(parentId);
+            BranchNode parent = (BranchNode) store.readNode(parentId);
 
             while (parent.shouldGoRight(result.promotedValue())) {
                 long prevId = parentId;
                 parentId = parent.link();
                 nodeLock.lockNode(parentId);
-                parent = (BranchNode) nodeManager.readNode(parentId);
+                parent = (BranchNode) store.readNode(parentId);
                 nodeLock.unlockNode(prevId);
             }
 
@@ -98,13 +89,13 @@ public class BLinkTree {
         }
 
         if (result != null) {
-            Node left = nodeManager.writeNode(result.left());
+            Node left = store.writeNode(result.left());
             nodeLock.unlockNode(left.id());
         }
     }
 
-    public void createNewRoot(Node leftChild, Node rightChild, Value promotedValue) {
-        Node newRoot = nodeManager.writeNode(new BranchNode(
+    private void createNewBranchRoot(Node leftChild, Node rightChild, Value promotedValue) {
+        Node newRoot = store.writeNode(new BranchNode(
                 null,
                 true,
                 leftChild.height() + 1,
@@ -112,17 +103,20 @@ public class BLinkTree {
                 new long[]{leftChild.id(), rightChild.id(), -1}
             )
         );
-        rootId = newRoot.id();
-        leftmostNodes.add(rootId);
+        store.updateRootId(newRoot.id());
+        leftmostNodes.put(newRoot.height(), newRoot.id());
     }
 
-    public long getLeftmostNodeAtHeight(int height) {
+    private long getLeftmostNodeAtHeight(int height) {
         int tries = 0;
-        while (tries++ < 5) {
-            try {
-                return leftmostNodes.get(height);
-            } catch (IndexOutOfBoundsException e) {
+        while (tries < 5) {
+            Long id = leftmostNodes.get(height);
+            if (id != null) {
+                System.out.println("znalazlem");
+                return id;
+            } else {
                 LockSupport.parkNanos(1_000_000);
+                tries++;
             }
         }
         throw new RuntimeException("Failed to get leftmost node at height " + height);

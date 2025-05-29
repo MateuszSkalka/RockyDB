@@ -21,18 +21,18 @@ public class App {
     }
 
     public static void main(String[] args) throws IOException, InterruptedException {
-        Path path = Path.of("./super99.db");
+        Path path = Path.of("./super1.db");
         File file = path.toFile();
 
-        NodeManager nodeManager = new NodeManager(file);
-        BLinkTree bLinkTree = new BLinkTree(nodeManager);
+        DiscStore discStore = new DiscStore(file);
+        BLinkTree bLinkTree = new BLinkTree(discStore);
 
         int SIZE = 256 * 1024;
         Value[] keys = new Value[SIZE];
         Value[] vals = new Value[SIZE];
         for (int i = 0; i < SIZE; i++) {
             keys[i] = new Value((genRandomString(8, 16) + "_" + i).getBytes());
-            vals[i] = new Value((genRandomString(64, 128) + "_" + i).getBytes());
+            vals[i] = new Value((genRandomString(128, 256) + "_" + i).getBytes());
         }
 
         int fails = 0;
@@ -57,7 +57,7 @@ public class App {
 
         System.out.println("Time taken for writes: " + (end - start) + " ms");
 
-        start = System.currentTimeMillis();
+        long start2 = System.currentTimeMillis();
         for (int i = 0; i < SIZE; i++) {
             var res = bLinkTree.get(keys[i]);
             if (res == null) {
@@ -68,8 +68,8 @@ public class App {
                 fails++;
             }
         }
-        end = System.currentTimeMillis();
-        System.out.println("Time taken for reads: " + (end - start) + " ms");
+        long end2 = System.currentTimeMillis();
+        System.out.println("Time taken for reads: " + (end2 - start2) + " ms");
         System.out.println("N.O. ERRORS: " + fails);
     }
 

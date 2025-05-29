@@ -137,7 +137,7 @@ public class BranchNode extends Node {
     }
 
     private int sizeOfCell(int keyIdx, Value[] keys) {
-        return NodeManager.KEY_PREFIX_SIZE + keys[keyIdx].bytes().length + NodeManager.VALUE_POINTER_SIZE;
+        return DiscStore.KEY_PREFIX_SIZE + keys[keyIdx].bytes().length + DiscStore.VALUE_POINTER_SIZE;
 
     }
 }

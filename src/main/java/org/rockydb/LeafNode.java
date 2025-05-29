@@ -20,6 +20,7 @@ public class LeafNode extends Node {
 
     @Override
     public boolean shouldGoRight(Value key) {
+        if (keys.length == 0) return false;
         return keys[keys.length - 1].compareTo(key) < 0 && link() != -1;
     }
 
@@ -127,6 +128,6 @@ public class LeafNode extends Node {
     }
 
     private int sizeOfCell(int keyIdx, Value[] keys, Value[] values) {
-        return 2 * NodeManager.KEY_PREFIX_SIZE + keys[keyIdx].bytes().length + values[keyIdx].bytes().length;
+        return 2 * DiscStore.KEY_PREFIX_SIZE + keys[keyIdx].bytes().length + values[keyIdx].bytes().length;
     }
 }
