@@ -59,7 +59,7 @@ public class BLinkTree {
             result.left().setLink(rightChild.id());
             Node leftChild = store.writeNode(result.left());
             if (isRoot) {
-                createNewBranchRoot(leftChild, rightChild, result.promotedValue());
+                createNewRoot(leftChild, rightChild, result.promotedValue());
                 nodeLock.unlockNode(leftChild.id());
                 result = null;
                 break;
@@ -94,7 +94,7 @@ public class BLinkTree {
         }
     }
 
-    private void createNewBranchRoot(Node leftChild, Node rightChild, Value promotedValue) {
+    private void createNewRoot(Node leftChild, Node rightChild, Value promotedValue) {
         Node newRoot = store.writeNode(new BranchNode(
                 null,
                 true,
