@@ -112,7 +112,6 @@ public class BLinkTree {
         while (tries < 5) {
             Long id = leftmostNodes.get(height);
             if (id != null) {
-                System.out.println("znalazlem");
                 return id;
             } else {
                 LockSupport.parkNanos(1_000_000);
