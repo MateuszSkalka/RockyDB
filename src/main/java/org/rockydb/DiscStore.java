@@ -6,6 +6,7 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import static org.rockydb.ByteUtils.readIsLeafFlag;
 import static org.rockydb.ByteUtils.readIsLeftmostNodeFlag;
@@ -32,14 +33,14 @@ public class DiscStore implements AutoCloseable, Store {
     public Node writeNode(Node node) {
         ByteBuffer buffer;
         if (node instanceof BranchNode branchNode) {
-            buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), branchNode.getKeys(), branchNode.getPointers());
+            buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), branchNode.getKeys(), branchNode.getPointers(), branchNode.link());
         } else if (node instanceof LeafNode leafNode) {
-            buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), leafNode.getKeys(), leafNode.getValues());
+            buffer = createBuffer(node.isLeaf(), node.isLeftmostNode(), node.height(), leafNode.getKeys(), leafNode.getValues(), leafNode.link());
         } else {
             throw new IllegalArgumentException();
         }
 
-        long nodeId = node.id() == null ? nextPageId.getAndIncrement() : node.id();
+        long nodeId = node.id();
         buffer.rewind();
         stripedLock.runInWriteLock(nodeId, () -> {
             try {
@@ -48,7 +49,6 @@ public class DiscStore implements AutoCloseable, Store {
                 throw new RuntimeException(e);
             }
         });
-        node.setId(nodeId);
         return node;
     }
 
@@ -78,6 +78,11 @@ public class DiscStore implements AutoCloseable, Store {
     }
 
     @Override
+    public Supplier<Long> nodeIdGenerator() {
+        return nextPageId::getAndIncrement;
+    }
+
+    @Override
     public void updateRootId(long id) {
         ByteBuffer buffer = ByteBuffer.wrap(new byte[Long.BYTES]);
         buffer.putLong(id);
@@ -97,14 +102,16 @@ public class DiscStore implements AutoCloseable, Store {
 
     private LeafNode readLeafNode(long id, boolean isLeftmost, int height, ByteBuffer buffer, int elemCount) {
         Value[] keys = readValueArray(buffer, elemCount);
-        Value[] values = readValueArray(buffer, elemCount + 1);
-        return new LeafNode(id, isLeftmost, height, keys, values);
+        Value[] values = readValueArray(buffer, elemCount);
+        long link = readLong(buffer);
+        return new LeafNode(id, isLeftmost, height, keys, values, link);
     }
 
     private BranchNode readBranchNode(long id, boolean isLeftmost, int height, ByteBuffer buffer, int elemCount) {
         Value[] keys = readValueArray(buffer, elemCount);
-        long[] values = readLongArray(buffer, elemCount + 1);
-        return new BranchNode(id, isLeftmost, height, keys, values);
+        long[] values = readLongArray(buffer, elemCount);
+        long link = readLong(buffer);
+        return new BranchNode(id, isLeftmost, height, keys, values, link);
     }
 
     private Value[] readValueArray(ByteBuffer buffer, int size) {
@@ -118,6 +125,10 @@ public class DiscStore implements AutoCloseable, Store {
         return arr;
     }
 
+    private long readLong(ByteBuffer buffer) {
+        return buffer.getLong();
+    }
+
     private long[] readLongArray(ByteBuffer buffer, int size) {
         long[] arr = new long[size];
         for (int i = 0; i < arr.length; i++) {
@@ -127,7 +138,7 @@ public class DiscStore implements AutoCloseable, Store {
     }
 
 
-    private ByteBuffer createBuffer(boolean isLeaf, boolean isLeftmost, int height, Value[] keys, long[] pointers) {
+    private ByteBuffer createBuffer(boolean isLeaf, boolean isLeftmost, int height, Value[] keys, long[] pointers, long link) {
         ByteBuffer buffer = createBuffer(isLeaf, isLeftmost, keys.length, height);
 
         for (Value key : keys) {
@@ -137,10 +148,11 @@ public class DiscStore implements AutoCloseable, Store {
         for (long valuePointer : pointers) {
             buffer.putLong(valuePointer);
         }
+        buffer.putLong(link);
         return buffer;
     }
 
-    private ByteBuffer createBuffer(boolean isLeaf, boolean isLeftmost, int height, Value[] keys, Value[] values) {
+    private ByteBuffer createBuffer(boolean isLeaf, boolean isLeftmost, int height, Value[] keys, Value[] values, long link) {
         ByteBuffer buffer = createBuffer(isLeaf, isLeftmost, keys.length, height);
 
         for (Value key : keys) {
@@ -151,6 +163,7 @@ public class DiscStore implements AutoCloseable, Store {
             buffer.putInt(key.bytes().length);
             buffer.put(key.bytes());
         }
+        buffer.putLong(link);
         return buffer;
     }
 
@@ -173,14 +186,14 @@ public class DiscStore implements AutoCloseable, Store {
         ByteBuffer buffer = ByteBuffer.wrap(new byte[Long.BYTES]);
         fileChannel.read(buffer, TREE_ROOT_FILE_POSITION);
         buffer.rewind();
-        long val = buffer.getLong();
+        long val = readLong(buffer);
         if (val < 1) return -1;
         else return val;
     }
 
     private void checkAndInitTree() {
         if (rootId.get() == -1) {
-            Node root = writeNode(new LeafNode(null, true, 1, new Value[]{}, new Value[]{new Value(ByteUtils.toByteArray(-1L))}));
+            Node root = writeNode(new LeafNode(nextPageId.getAndIncrement(), true, 1, new Value[]{}, new Value[]{}, -1L));
             updateRootId(root.id());
         }
     }

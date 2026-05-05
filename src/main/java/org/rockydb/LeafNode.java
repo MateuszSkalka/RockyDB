@@ -1,6 +1,7 @@
 package org.rockydb;
 
 import java.util.Arrays;
+import java.util.function.Supplier;
 
 public class LeafNode extends Node {
     private final Value[] keys;
@@ -11,9 +12,10 @@ public class LeafNode extends Node {
         boolean isLeftmostNode,
         int height,
         Value[] keys,
-        Value[] values
+        Value[] values,
+        long link
     ) {
-        super(id, true, isLeftmostNode, height);
+        super(id, true, isLeftmostNode, height, link);
         this.keys = keys;
         this.values = values;
     }
@@ -25,18 +27,8 @@ public class LeafNode extends Node {
     }
 
     @Override
-    public long link() {
-        return ByteUtils.toLong(values[values.length - 1].bytes());
-    }
-
-    @Override
     public Value biggestKey() {
         return keys[keys.length - 1];
-    }
-
-    @Override
-    public void setLink(long linkId) {
-        values[values.length - 1] = new Value(ByteUtils.toByteArray(linkId));
     }
 
     @Override
@@ -64,29 +56,29 @@ public class LeafNode extends Node {
         else return null;
     }
 
-    public CreationResult copyWith(Value keyToAdd, Value valueToAdd) {
+    public CreationResult copyWith(Value keyToAdd, Value valueToAdd, Supplier<Long> nodeIdGenerator) {
         int idx = Arrays.binarySearch(keys, keyToAdd);
         if (idx > -1) {
             values[idx] = valueToAdd;
-            return splitIfNeeded(keys, values);
+            return splitIfNeeded(keys, values, nodeIdGenerator);
         } else {
             idx = -(idx + 1);
             Value[] newKeys = insert(keys, keyToAdd, idx);
             Value[] newValues = insert(values, valueToAdd, idx);
-            return splitIfNeeded(newKeys, newValues);
+            return splitIfNeeded(newKeys, newValues, nodeIdGenerator);
         }
     }
 
-    private CreationResult splitIfNeeded(Value[] keys, Value[] values) {
-        int newSize = size(keys) + size(values);
+    private CreationResult splitIfNeeded(Value[] keys, Value[] values, Supplier<Long> nodeIdGenerator) {
+        int newSize = size(keys) + size(values) + Store.LINK_POINTER_SIZE;
         if (needsSplit(newSize)) {
-            return split(keys, values, newSize);
+            return split(keys, values, newSize, nodeIdGenerator);
         } else {
-            return new CreationResult(new LeafNode(id(), isLeftmostNode(), height(), keys, values), null, null);
+            return new CreationResult(new LeafNode(id(), isLeftmostNode(), height(), keys, values, link()), null, null);
         }
     }
 
-    private CreationResult split(Value[] keys, Value[] values, int newSize) {
+    private CreationResult split(Value[] keys, Value[] values, int newSize, Supplier<Long> nodeIdGenerator) {
         int keyMid = 0;
         int leftSize = sizeOfCell(0, keys, values);
         int rightSize = newSize - leftSize;
@@ -102,19 +94,20 @@ public class LeafNode extends Node {
 
         Value promotedValue = keys[keyMid];
         Value[] leftKeys = new Value[keyMid + 1];
-        Value[] leftValues = new Value[leftKeys.length + 1];
+        Value[] leftValues = new Value[leftKeys.length];
 
         Value[] rightKeys = new Value[keys.length - leftKeys.length];
-        Value[] rightValues = new Value[rightKeys.length + 1];
+        Value[] rightValues = new Value[rightKeys.length];
 
         System.arraycopy(keys, 0, leftKeys, 0, leftKeys.length);
-        System.arraycopy(values, 0, leftValues, 0, leftValues.length - 1);
+        System.arraycopy(values, 0, leftValues, 0, leftValues.length);
         System.arraycopy(keys, keyMid + 1, rightKeys, 0, rightKeys.length);
-        System.arraycopy(values, leftValues.length - 1, rightValues, 0, rightValues.length);
+        System.arraycopy(values, leftValues.length, rightValues, 0, rightValues.length);
 
+        long rightNodeId = nodeIdGenerator.get();
         return new CreationResult(
-            new LeafNode(id(), isLeftmostNode(), height(), leftKeys, leftValues),
-            new LeafNode(null, false, height(), rightKeys, rightValues),
+            new LeafNode(id(), isLeftmostNode(), height(), leftKeys, leftValues, rightNodeId),
+            new LeafNode(rightNodeId, false, height(), rightKeys, rightValues, this.link()),
             promotedValue
         );
     }

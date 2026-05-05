@@ -52,11 +52,10 @@ public class BLinkTree {
         }
 
         boolean isRoot = leaf.isRoot();
-        CreationResult result = leaf.copyWith(key, value);
+        CreationResult result = leaf.copyWith(key, value, store.nodeIdGenerator());
 
         while (result.promotedValue() != null) {
             Node rightChild = store.writeNode(result.right());
-            result.left().setLink(rightChild.id());
             Node leftChild = store.writeNode(result.left());
             if (isRoot) {
                 createNewRoot(leftChild, rightChild, result.promotedValue());
@@ -83,7 +82,7 @@ public class BLinkTree {
             }
 
             isRoot = parent.isRoot();
-            result = parent.copyWith(result.promotedValue(), rightChild.id(), rightChild.biggestKey());
+            result = parent.copyWith(result.promotedValue(), rightChild.id(), rightChild.biggestKey(), store.nodeIdGenerator());
 
             nodeLock.unlockNode(leftChild.id());
         }
@@ -96,12 +95,13 @@ public class BLinkTree {
 
     private void createNewRoot(Node leftChild, Node rightChild, Value promotedValue) {
         Node newRoot = store.writeNode(new BranchNode(
-                null,
-                true,
-                leftChild.height() + 1,
-                new Value[]{promotedValue, rightChild.biggestKey()},
-                new long[]{leftChild.id(), rightChild.id(), -1}
-            )
+                        store.nodeIdGenerator().get(),
+                        true,
+                        leftChild.height() + 1,
+                        new Value[]{promotedValue, rightChild.biggestKey()},
+                        new long[]{leftChild.id(), rightChild.id()},
+                        -1L
+                )
         );
         store.updateRootId(newRoot.id());
         leftmostNodes.put(newRoot.height(), newRoot.id());

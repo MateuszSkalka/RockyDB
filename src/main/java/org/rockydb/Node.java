@@ -2,27 +2,25 @@ package org.rockydb;
 
 public abstract class Node {
     public static final int MAX_NODE_SIZE = DiscStore.PAGE_SIZE - DiscStore.PAGE_HEADERS_SIZE;
-    private Long id;
+    private final long id;
     private final boolean isLeaf;
     private final boolean isLeftmostNode;
     private final int height;
+    private final long link;
 
-    public Node(Long id, boolean isLeaf, boolean isLeftmostNode, int height) {
+    public Node(Long id, boolean isLeaf, boolean isLeftmostNode, int height, long link) {
         this.id = id;
         this.isLeaf = isLeaf;
         this.isLeftmostNode = isLeftmostNode;
         this.height = height;
+        this.link = link;
     }
 
     public abstract long nextNode(Value key);
 
     public abstract boolean isRightLink(long nodeId);
 
-    public abstract void setLink(long nodeId);
-
     public abstract boolean shouldGoRight(Value key);
-
-    public abstract long link();
 
     public abstract Value biggestKey();
 
@@ -46,10 +44,6 @@ public abstract class Node {
         return nodeSize > MAX_NODE_SIZE;
     }
 
-    public void setId(long id) {
-        this.id = id;
-    }
-
     protected boolean isRightmostNode() {
         return link() == -1;
     }
@@ -64,6 +58,10 @@ public abstract class Node {
             size += DiscStore.KEY_PREFIX_SIZE + value.bytes().length;
         }
         return size;
+    }
+
+    public long link() {
+        return link;
     }
 
     protected int size(long[] array) {
