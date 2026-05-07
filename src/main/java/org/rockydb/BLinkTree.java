@@ -3,10 +3,7 @@ package org.rockydb;
 
 import org.rockydb.Node.CreationResult;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Deque;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.locks.LockSupport;
 
 public class BLinkTree {
@@ -68,7 +65,7 @@ public class BLinkTree {
             if (!ancestors.isEmpty()) {
                 parentId = ancestors.pop();
             } else {
-                parentId = getLeftmostNodeAtLevel(leftChild.height() + 1);
+                parentId = getLeftmostNodeAtLevel(leftChild.height());
             }
 
             nodeLock.lockNode(parentId);
@@ -104,6 +101,7 @@ public class BLinkTree {
                 )
         );
         store.updateRootId(newRoot.id());
+        leftmostNodes.add(newRoot.id());
     }
 
     private List<Long> initLeftmostNodes() {
@@ -116,7 +114,7 @@ public class BLinkTree {
             leftmost.add(nodeId);
             node = store.readNode(nodeId);
         }
-        return leftmost.reversed();
+        return Collections.synchronizedList(leftmost.reversed());
     }
 
     private long getLeftmostNodeAtLevel(int level) {
@@ -126,7 +124,6 @@ public class BLinkTree {
                 LockSupport.parkNanos(1_000_000);
                 tries++;
             } else {
-
                 return leftmostNodes.get(level);
             }
         }
