@@ -38,10 +38,6 @@ public abstract class Node {
         return nodeSize > MAX_NODE_SIZE;
     }
 
-    protected boolean isRightmostNode() {
-        return link() == -1;
-    }
-
     protected int size(Value[] array) {
         int size = 0;
         for (Value value : array) {
