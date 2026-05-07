@@ -4,7 +4,7 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class StripedLock {
-    private final int STRIPS = 1024;
+    private static final int STRIPS = 1024;
     private final ReadWriteLock[] locks = new ReadWriteLock[STRIPS];
 
     public StripedLock() {

@@ -8,14 +8,13 @@ public class LeafNode extends Node {
     private final Value[] values;
 
     public LeafNode(
-        Long id,
-        boolean isLeftmostNode,
+        long id,
         int height,
         Value[] keys,
         Value[] values,
         long link
     ) {
-        super(id, true, isLeftmostNode, height, link);
+        super(id, true, height, link);
         this.keys = keys;
         this.values = values;
     }
@@ -74,7 +73,7 @@ public class LeafNode extends Node {
         if (needsSplit(newSize)) {
             return split(keys, values, newSize, nodeIdGenerator);
         } else {
-            return new CreationResult(new LeafNode(id(), isLeftmostNode(), height(), keys, values, link()), null, null);
+            return new CreationResult(new LeafNode(id(), height(), keys, values, link()), null, null);
         }
     }
 
@@ -106,8 +105,8 @@ public class LeafNode extends Node {
 
         long rightNodeId = nodeIdGenerator.get();
         return new CreationResult(
-            new LeafNode(id(), isLeftmostNode(), height(), leftKeys, leftValues, rightNodeId),
-            new LeafNode(rightNodeId, false, height(), rightKeys, rightValues, this.link()),
+            new LeafNode(id(), height(), leftKeys, leftValues, rightNodeId),
+            new LeafNode(rightNodeId, height(), rightKeys, rightValues, this.link()),
             promotedValue
         );
     }

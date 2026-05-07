@@ -4,14 +4,12 @@ public abstract class Node {
     public static final int MAX_NODE_SIZE = DiscStore.PAGE_SIZE - DiscStore.PAGE_HEADERS_SIZE;
     private final long id;
     private final boolean isLeaf;
-    private final boolean isLeftmostNode;
     private final int height;
     private final long link;
 
-    public Node(Long id, boolean isLeaf, boolean isLeftmostNode, int height, long link) {
+    public Node(long id, boolean isLeaf, int height, long link) {
         this.id = id;
         this.isLeaf = isLeaf;
-        this.isLeftmostNode = isLeftmostNode;
         this.height = height;
         this.link = link;
     }
@@ -28,15 +26,11 @@ public abstract class Node {
         return height;
     }
 
-    public boolean isRoot() {
-        return isLeftmostNode() && isRightmostNode();
-    }
-
     public boolean isLeaf() {
         return isLeaf;
     }
 
-    public Long id() {
+    public long id() {
         return id;
     }
 
@@ -46,10 +40,6 @@ public abstract class Node {
 
     protected boolean isRightmostNode() {
         return link() == -1;
-    }
-
-    protected boolean isLeftmostNode() {
-        return isLeftmostNode;
     }
 
     protected int size(Value[] array) {

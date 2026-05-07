@@ -3,19 +3,21 @@ package org.rockydb;
 
 import org.rockydb.Node.CreationResult;
 
-import java.util.Map;
-import java.util.Stack;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
 import java.util.concurrent.locks.LockSupport;
 
 public class BLinkTree {
     private final Store store;
     private final PerNodeLock nodeLock;
-    private final Map<Integer, Long> leftmostNodes = new ConcurrentHashMap<>();
+    private final List<Long> leftmostNodes;
 
     public BLinkTree(Store store) {
         this.store = store;
         this.nodeLock = new PerNodeLock();
+        this.leftmostNodes = initLeftmostNodes();
     }
 
     public Value get(Value key) {
@@ -27,15 +29,14 @@ public class BLinkTree {
         return ((LeafNode) node).getValueForKey(key);
     }
 
-
     public void addValue(Value key, Value value) {
-        Stack<Long> nodes = new Stack<>();
+        Deque<Long> ancestors = new ArrayDeque<>();
         long currentId = store.rootId();
         Node node = store.readNode(currentId);
         while (!node.isLeaf()) {
             currentId = node.nextNode(key);
             if (!node.isRightLink(currentId)) {
-                nodes.push(node.id());
+                ancestors.push(node.id());
             }
             node = store.readNode(currentId);
         }
@@ -51,7 +52,7 @@ public class BLinkTree {
             nodeLock.unlockNode(prevId);
         }
 
-        boolean isRoot = leaf.isRoot();
+        boolean isRoot = store.rootId() == leaf.id();
         CreationResult result = leaf.copyWith(key, value, store.nodeIdGenerator());
 
         while (result.promotedValue() != null) {
@@ -64,10 +65,10 @@ public class BLinkTree {
                 break;
             }
             long parentId;
-            if (!nodes.isEmpty()) {
-                parentId = nodes.pop();
+            if (!ancestors.isEmpty()) {
+                parentId = ancestors.pop();
             } else {
-                parentId = getLeftmostNodeAtHeight(leftChild.height() + 1);
+                parentId = getLeftmostNodeAtLevel(leftChild.height() + 1);
             }
 
             nodeLock.lockNode(parentId);
@@ -81,7 +82,7 @@ public class BLinkTree {
                 nodeLock.unlockNode(prevId);
             }
 
-            isRoot = parent.isRoot();
+            isRoot = store.rootId() == parent.id();
             result = parent.copyWith(result.promotedValue(), rightChild.id(), rightChild.biggestKey(), store.nodeIdGenerator());
 
             nodeLock.unlockNode(leftChild.id());
@@ -96,7 +97,6 @@ public class BLinkTree {
     private void createNewRoot(Node leftChild, Node rightChild, Value promotedValue) {
         Node newRoot = store.writeNode(new BranchNode(
                         store.nodeIdGenerator().get(),
-                        true,
                         leftChild.height() + 1,
                         new Value[]{promotedValue, rightChild.biggestKey()},
                         new long[]{leftChild.id(), rightChild.id()},
@@ -104,20 +104,32 @@ public class BLinkTree {
                 )
         );
         store.updateRootId(newRoot.id());
-        leftmostNodes.put(newRoot.height(), newRoot.id());
     }
 
-    private long getLeftmostNodeAtHeight(int height) {
+    private List<Long> initLeftmostNodes() {
+        long nodeId = store.rootId();
+        Node node = store.readNode(nodeId);
+        List<Long> leftmost = new ArrayList<>();
+        leftmost.add(nodeId);
+        while (!node.isLeaf() && ((BranchNode) node).getPointers().length > 0) {
+            nodeId = ((BranchNode) node).getPointers()[0];
+            leftmost.add(nodeId);
+            node = store.readNode(nodeId);
+        }
+        return leftmost.reversed();
+    }
+
+    private long getLeftmostNodeAtLevel(int level) {
         int tries = 0;
         while (tries < 5) {
-            Long id = leftmostNodes.get(height);
-            if (id != null) {
-                return id;
-            } else {
+            if (leftmostNodes.size() <= level) {
                 LockSupport.parkNanos(1_000_000);
                 tries++;
+            } else {
+
+                return leftmostNodes.get(level);
             }
         }
-        throw new RuntimeException("Failed to get leftmost node at height " + height);
+        throw new RuntimeException("Failed to get leftmost node at level " + level);
     }
 }
