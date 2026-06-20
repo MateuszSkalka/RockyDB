@@ -42,7 +42,3 @@ application {
     // Define the main class for the application.
     mainClass = "org.rockydb.App"
 }
-
-tasks.test {
-    useJUnitPlatform()
-}

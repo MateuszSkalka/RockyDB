@@ -1,7 +1,7 @@
 package org.rockydb;
 
 public abstract class Node {
-    public static final int MAX_NODE_SIZE = DiscStore.PAGE_SIZE - DiscStore.PAGE_HEADERS_SIZE;
+    public static final int MAX_NODE_SIZE = Store.PAGE_SIZE - Store.PAGE_HEADERS_SIZE;
     private final long id;
     private final boolean isLeaf;
     private final int height;
@@ -41,7 +41,7 @@ public abstract class Node {
     protected int size(Value[] array) {
         int size = 0;
         for (Value value : array) {
-            size += DiscStore.KEY_PREFIX_SIZE + value.bytes().length;
+            size += Store.KEY_PREFIX_SIZE + value.bytes().length;
         }
         return size;
     }

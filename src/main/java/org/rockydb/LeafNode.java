@@ -120,6 +120,6 @@ public class LeafNode extends Node {
     }
 
     private int sizeOfCell(int keyIdx, Value[] keys, Value[] values) {
-        return 2 * DiscStore.KEY_PREFIX_SIZE + keys[keyIdx].bytes().length + values[keyIdx].bytes().length;
+        return 2 * Store.KEY_PREFIX_SIZE + keys[keyIdx].bytes().length + values[keyIdx].bytes().length;
     }
 }
