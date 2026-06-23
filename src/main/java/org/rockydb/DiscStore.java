@@ -8,80 +8,47 @@ import java.nio.channels.FileChannel;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
-import static org.rockydb.ByteUtils.readIsLeafFlag;
-
-public class DiscStore implements AutoCloseable, Store {
+final class DiscStore implements AutoCloseable {
     private static final long TREE_ROOT_FILE_POSITION = 0;
 
     private final RandomAccessFile raf;
     private final FileChannel fileChannel;
-    private final StripedLock stripedLock;
     private final AtomicLong nextPageId;
     private final AtomicLong rootId;
 
-    public DiscStore(File dbFile) throws IOException {
+    DiscStore(File dbFile) throws IOException {
         raf = new RandomAccessFile(dbFile, "rw");
         this.fileChannel = raf.getChannel();
-        this.stripedLock = new StripedLock();
         this.nextPageId = new AtomicLong(loadNextPageId());
         this.rootId = new AtomicLong(loadRootId());
         checkAndInitTree();
     }
 
-    @Override
-    public Node writeNode(Node node) {
-        ByteBuffer buffer;
-        if (node instanceof BranchNode branchNode) {
-            buffer = createBuffer(node.isLeaf(), node.height(), branchNode.getKeys(), branchNode.getPointers(), branchNode.link());
-        } else if (node instanceof LeafNode leafNode) {
-            buffer = createBuffer(node.isLeaf(), node.height(), leafNode.getKeys(), leafNode.getValues(), leafNode.link());
-        } else {
-            throw new IllegalArgumentException();
+    ByteBuffer readRawPage(long id) {
+        ByteBuffer buffer = ByteBuffer.wrap(new byte[Store.PAGE_SIZE]);
+        try {
+            fileChannel.read(buffer, id * Store.PAGE_SIZE);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
-
-        long nodeId = node.id();
         buffer.rewind();
-        stripedLock.runInWriteLock(nodeId, () -> {
-            try {
-                fileChannel.write(buffer, PAGE_SIZE * nodeId);
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        });
-        return node;
+        return buffer;
     }
 
-    @Override
-    public Node readNode(long id) {
-        ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
-        stripedLock.runInReadLock(id, () -> {
-            try {
-                fileChannel.read(buffer, id * PAGE_SIZE);
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        });
+    void writeRawPage(long id, ByteBuffer buffer) {
         buffer.rewind();
-
-        byte flags = buffer.get();
-        boolean isLeaf = readIsLeafFlag(flags);
-        int elemCount = buffer.getShort();
-        int height = buffer.getShort();
-
-        if (isLeaf) {
-            return readLeafNode(id, height, buffer, elemCount);
-        } else {
-            return readBranchNode(id, height, buffer, elemCount);
+        try {
+            fileChannel.write(buffer, Store.PAGE_SIZE * id);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
     }
 
-    @Override
-    public Supplier<Long> nodeIdGenerator() {
+    Supplier<Long> nodeIdGenerator() {
         return nextPageId::getAndIncrement;
     }
 
-    @Override
-    public void updateRootId(long id) {
+    void updateRootId(long id) {
         ByteBuffer buffer = ByteBuffer.wrap(new byte[Long.BYTES]);
         buffer.putLong(id);
         buffer.rewind();
@@ -93,106 +60,29 @@ public class DiscStore implements AutoCloseable, Store {
         rootId.set(id);
     }
 
-    @Override
-    public long rootId() {
+    long rootId() {
         return rootId.get();
     }
 
-    private LeafNode readLeafNode(long id, int height, ByteBuffer buffer, int elemCount) {
-        Value[] keys = readValueArray(buffer, elemCount);
-        Value[] values = readValueArray(buffer, elemCount);
-        long link = readLong(buffer);
-        return new LeafNode(id, height, keys, values, link);
-    }
-
-    private BranchNode readBranchNode(long id, int height, ByteBuffer buffer, int elemCount) {
-        Value[] keys = readValueArray(buffer, elemCount);
-        long[] values = readLongArray(buffer, elemCount);
-        long link = readLong(buffer);
-        return new BranchNode(id, height, keys, values, link);
-    }
-
-    private Value[] readValueArray(ByteBuffer buffer, int size) {
-        Value[] arr = new Value[size];
-        for (int i = 0; i < arr.length; i++) {
-            int nextSize = buffer.getInt();
-            byte[] bytes = new byte[nextSize];
-            buffer.get(bytes);
-            arr[i] = new Value(bytes);
-        }
-        return arr;
-    }
-
-    private long readLong(ByteBuffer buffer) {
-        return buffer.getLong();
-    }
-
-    private long[] readLongArray(ByteBuffer buffer, int size) {
-        long[] arr = new long[size];
-        for (int i = 0; i < arr.length; i++) {
-            arr[i] = buffer.getLong();
-        }
-        return arr;
-    }
-
-
-    private ByteBuffer createBuffer(boolean isLeaf, int height, Value[] keys, long[] pointers, long link) {
-        ByteBuffer buffer = createBuffer(isLeaf, keys.length, height);
-
-        for (Value key : keys) {
-            buffer.putInt(key.bytes().length);
-            buffer.put(key.bytes());
-        }
-        for (long valuePointer : pointers) {
-            buffer.putLong(valuePointer);
-        }
-        buffer.putLong(link);
-        return buffer;
-    }
-
-    private ByteBuffer createBuffer(boolean isLeaf, int height, Value[] keys, Value[] values, long link) {
-        ByteBuffer buffer = createBuffer(isLeaf, keys.length, height);
-
-        for (Value key : keys) {
-            buffer.putInt(key.bytes().length);
-            buffer.put(key.bytes());
-        }
-        for (Value key : values) {
-            buffer.putInt(key.bytes().length);
-            buffer.put(key.bytes());
-        }
-        buffer.putLong(link);
-        return buffer;
-    }
-
-    private ByteBuffer createBuffer(boolean isLeaf, int numOfKeys, int height) {
-        ByteBuffer buffer = ByteBuffer.wrap(new byte[PAGE_SIZE]);
-        // is leaf flag
-        buffer.put(ByteUtils.createFlags(isLeaf));
-        //number of keys
-        buffer.putShort((short) numOfKeys);
-        // height
-        buffer.putShort((short) height);
-        return buffer;
-    }
-
     private long loadNextPageId() throws IOException {
-        return Math.max(1, raf.length() / PAGE_SIZE);
+        return Math.max(1, raf.length() / Store.PAGE_SIZE);
     }
 
     private long loadRootId() throws IOException {
         ByteBuffer buffer = ByteBuffer.wrap(new byte[Long.BYTES]);
         fileChannel.read(buffer, TREE_ROOT_FILE_POSITION);
         buffer.rewind();
-        long val = readLong(buffer);
+        long val = buffer.getLong();
         if (val < 1) return -1;
         else return val;
     }
 
     private void checkAndInitTree() {
         if (rootId.get() == -1) {
-            Node root = writeNode(new LeafNode(nextPageId.getAndIncrement(), 1, new Value[]{}, new Value[]{}, -1L));
-            updateRootId(root.id());
+            long id = nextPageId.getAndIncrement();
+            Node root = new LeafNode(id, 1, new Value[]{}, new Value[]{}, -1L);
+            writeRawPage(id, PageCodec.serialize(root));
+            updateRootId(id);
         }
     }
 

@@ -10,12 +10,9 @@ public interface Store {
     int LINK_POINTER_SIZE = VALUE_POINTER_SIZE;
 
     Node readNode(long id);
-
     Node writeNode(Node node);
-
+    WriteHandle latchForWrite(long id);
     Supplier<Long> nodeIdGenerator();
-
     void updateRootId(long id);
-
     long rootId();
 }

@@ -4,21 +4,22 @@ package org.rockydb;
 import org.rockydb.Node.CreationResult;
 
 import java.util.*;
-import java.util.concurrent.locks.LockSupport;
 
 public class BLinkTree {
     private final Store store;
-    private final PerNodeLock nodeLock;
-    private final List<Long> leftmostNodes;
+    private final RootRef rootRef;
 
     public BLinkTree(Store store) {
+        this(store, new StoreBackedRootRef(store));
+    }
+
+    public BLinkTree(Store store, RootRef rootRef) {
         this.store = store;
-        this.nodeLock = new PerNodeLock();
-        this.leftmostNodes = initLeftmostNodes();
+        this.rootRef = rootRef;
     }
 
     public Value get(Value key) {
-        long rootId = store.rootId();
+        long rootId = rootRef.get();
         Node node = store.readNode(rootId);
         while (node.nextNode(key) != -1) {
             node = store.readNode(node.nextNode(key));
@@ -28,7 +29,7 @@ public class BLinkTree {
 
     public void addValue(Value key, Value value) {
         Deque<Long> ancestors = new ArrayDeque<>();
-        long currentId = store.rootId();
+        long currentId = rootRef.get();
         Node node = store.readNode(currentId);
         while (!node.isLeaf()) {
             currentId = node.nextNode(key);
@@ -38,56 +39,91 @@ public class BLinkTree {
             node = store.readNode(currentId);
         }
 
-        nodeLock.lockNode(currentId);
-        LeafNode leaf = (LeafNode) store.readNode(currentId);
+        WriteHandle handle = store.latchForWrite(currentId);
+        try {
+            LeafNode leaf = (LeafNode) handle.get();
 
-        while (leaf.nextNode(key) != -1) {
-            long prevId = currentId;
-            currentId = leaf.nextNode(key);
-            nodeLock.lockNode(currentId);
-            leaf = (LeafNode) store.readNode(currentId);
-            nodeLock.unlockNode(prevId);
+            while (leaf.nextNode(key) != -1) {
+                WriteHandle next = store.latchForWrite(leaf.nextNode(key));
+                handle.close();
+                handle = next;
+                leaf = (LeafNode) handle.get();
+            }
+
+            boolean isRoot = rootRef.get() == leaf.id();
+            CreationResult result = leaf.copyWith(key, value, store.nodeIdGenerator());
+
+            while (result.promotedValue() != null) {
+                Node rightChild = store.writeNode(result.right());
+                handle.set(result.left());
+                Node leftChild = result.left();
+
+                if (isRoot) {
+                    createNewRoot(leftChild, rightChild, result.promotedValue());
+                    result = null;
+                    break;
+                }
+
+                long parentId;
+                if (!ancestors.isEmpty()) {
+                    parentId = ancestors.pop();
+                } else {
+                    parentId = descendToLevel(result.promotedValue(), leftChild.height() + 1);
+                }
+                WriteHandle parent = store.latchForWrite(parentId);
+                try {
+                    BranchNode parentNode = (BranchNode) parent.get();
+
+                    while (parentNode.shouldGoRight(result.promotedValue())) {
+                        WriteHandle nextParent = store.latchForWrite(parentNode.link());
+                        parent.close();
+                        parent = nextParent;
+                        parentNode = (BranchNode) parent.get();
+                    }
+
+                    isRoot = rootRef.get() == parentNode.id();
+                    result = parentNode.copyWith(
+                            result.promotedValue(), rightChild.id(), rightChild.biggestKey(), store.nodeIdGenerator());
+                } catch (RuntimeException e) {
+                    parent.close();
+                    throw e;
+                }
+                handle.close();
+                handle = parent;
+            }
+
+            if (result != null) {
+                handle.set(result.left());
+            }
+        } finally {
+            handle.close();
+        }
+    }
+
+    public void delete(Value key) {
+        long currentId = rootRef.get();
+        Node node = store.readNode(currentId);
+        while (!node.isLeaf()) {
+            currentId = node.nextNode(key);
+            node = store.readNode(currentId);
         }
 
-        boolean isRoot = store.rootId() == leaf.id();
-        CreationResult result = leaf.copyWith(key, value, store.nodeIdGenerator());
-
-        while (result.promotedValue() != null) {
-            Node rightChild = store.writeNode(result.right());
-            Node leftChild = store.writeNode(result.left());
-            if (isRoot) {
-                createNewRoot(leftChild, rightChild, result.promotedValue());
-                nodeLock.unlockNode(leftChild.id());
-                result = null;
-                break;
-            }
-            long parentId;
-            if (!ancestors.isEmpty()) {
-                parentId = ancestors.pop();
-            } else {
-                parentId = getLeftmostNodeAtLevel(leftChild.height());
+        WriteHandle handle = store.latchForWrite(currentId);
+        try {
+            LeafNode leaf = (LeafNode) handle.get();
+            while (leaf.nextNode(key) != -1) {
+                WriteHandle next = store.latchForWrite(leaf.nextNode(key));
+                handle.close();
+                handle = next;
+                leaf = (LeafNode) handle.get();
             }
 
-            nodeLock.lockNode(parentId);
-            BranchNode parent = (BranchNode) store.readNode(parentId);
-
-            while (parent.shouldGoRight(result.promotedValue())) {
-                long prevId = parentId;
-                parentId = parent.link();
-                nodeLock.lockNode(parentId);
-                parent = (BranchNode) store.readNode(parentId);
-                nodeLock.unlockNode(prevId);
+            LeafNode updated = leaf.without(key);
+            if (updated != null) {
+                handle.set(updated);
             }
-
-            isRoot = store.rootId() == parent.id();
-            result = parent.copyWith(result.promotedValue(), rightChild.id(), rightChild.biggestKey(), store.nodeIdGenerator());
-
-            nodeLock.unlockNode(leftChild.id());
-        }
-
-        if (result != null) {
-            Node left = store.writeNode(result.left());
-            nodeLock.unlockNode(left.id());
+        } finally {
+            handle.close();
         }
     }
 
@@ -100,33 +136,34 @@ public class BLinkTree {
                         -1L
                 )
         );
-        store.updateRootId(newRoot.id());
-        leftmostNodes.add(newRoot.id());
+        rootRef.set(newRoot.id());
     }
 
-    private List<Long> initLeftmostNodes() {
-        long nodeId = store.rootId();
-        Node node = store.readNode(nodeId);
-        List<Long> leftmost = new ArrayList<>();
-        leftmost.add(nodeId);
-        while (!node.isLeaf() && ((BranchNode) node).getPointers().length > 0) {
-            nodeId = ((BranchNode) node).getPointers()[0];
-            leftmost.add(nodeId);
-            node = store.readNode(nodeId);
+    private long descendToLevel(Value key, int targetHeight) {
+        long currentId = rootRef.get();
+        Node node = store.readNode(currentId);
+        while (node.height() > targetHeight) {
+            currentId = node.nextNode(key);
+            node = store.readNode(currentId);
         }
-        return Collections.synchronizedList(leftmost.reversed());
+        return currentId;
     }
 
-    private long getLeftmostNodeAtLevel(int level) {
-        int tries = 0;
-        while (tries < 5) {
-            if (leftmostNodes.size() <= level) {
-                LockSupport.parkNanos(1_000_000);
-                tries++;
-            } else {
-                return leftmostNodes.get(level);
-            }
+    private static final class StoreBackedRootRef implements RootRef {
+        private final Store store;
+
+        StoreBackedRootRef(Store store) {
+            this.store = store;
         }
-        throw new RuntimeException("Failed to get leftmost node at level " + level);
+
+        @Override
+        public long get() {
+            return store.rootId();
+        }
+
+        @Override
+        public void set(long rootId) {
+            store.updateRootId(rootId);
+        }
     }
 }
