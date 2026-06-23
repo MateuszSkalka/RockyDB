@@ -4,22 +4,10 @@ import java.nio.ByteBuffer;
 
 import static org.rockydb.ByteUtils.readIsLeafFlag;
 
-/**
- * Stateless (de)serialization of a tree node to/from a fixed {@link Store#PAGE_SIZE} page.
- * <p>
- * Single source of truth shared by {@link DiscStore} (direct disk I/O) and {@link BufferedPool}
- * (cached I/O), so the on-disk page layout is defined in exactly one place. Every serialized
- * page is exactly {@code PAGE_SIZE} bytes; trailing bytes are zero-filled.
- */
 public final class PageCodec {
 
-    private PageCodec() {
-    }
+    private PageCodec() {}
 
-    /**
-     * Parse a {@code PAGE_SIZE} page (positioned at the header) into a fresh {@link Node}.
-     * The returned node is independent of the buffer, so callers may mutate it freely.
-     */
     public static Node deserialize(long id, ByteBuffer buffer) {
         byte flags = buffer.get();
         boolean isLeaf = readIsLeafFlag(flags);
@@ -33,10 +21,6 @@ public final class PageCodec {
         }
     }
 
-    /**
-     * Serialize a node into a fresh {@code PAGE_SIZE} buffer (zero-filled tail). The buffer
-     * is left positioned just past the last written byte; its {@code limit} is {@code PAGE_SIZE}.
-     */
     public static ByteBuffer serialize(Node node) {
         if (node instanceof BranchNode branchNode) {
             return createBuffer(node.isLeaf(), node.height(), branchNode.getKeys(), branchNode.getPointers(), branchNode.link());

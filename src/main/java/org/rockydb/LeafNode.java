@@ -68,6 +68,22 @@ public class LeafNode extends Node {
         }
     }
 
+    /**
+     * Returns a new leaf node with {@code key} and its value physically removed, or {@code null}
+     * if this leaf does not contain {@code key} (so the caller can skip the write).
+     * <p>
+     * Deletion-only: the node is never merged into or redistributed from a sibling, even when the
+     * removal empties it. An empty leaf stays linked in the chain — harmless to {@code get}
+     * ({@code shouldGoRight} returns {@code false} on an empty node) and self-healing on the next
+     * insert — and its parent separator is left untouched, since a stale separator remains a
+     * correct partition point.
+     */
+    public LeafNode without(Value key) {
+        int idx = Arrays.binarySearch(keys, key);
+        if (idx < 0) return null;
+        return new LeafNode(id(), height(), remove(keys, idx), remove(values, idx), link());
+    }
+
     private CreationResult splitIfNeeded(Value[] keys, Value[] values, Supplier<Long> nodeIdGenerator) {
         int newSize = size(keys) + size(values) + Store.LINK_POINTER_SIZE;
         if (needsSplit(newSize)) {
@@ -116,6 +132,13 @@ public class LeafNode extends Node {
         System.arraycopy(array, 0, newArray, 0, idx);
         newArray[idx] = e;
         System.arraycopy(array, idx, newArray, idx + 1, array.length - idx);
+        return newArray;
+    }
+
+    private Value[] remove(Value[] array, int idx) {
+        Value[] newArray = new Value[array.length - 1];
+        System.arraycopy(array, 0, newArray, 0, idx);
+        System.arraycopy(array, idx + 1, newArray, idx, array.length - idx - 1);
         return newArray;
     }
 

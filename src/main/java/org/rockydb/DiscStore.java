@@ -8,16 +8,6 @@ import java.nio.channels.FileChannel;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
-/**
- * Raw disc access layer for {@link BufferedPool}: positional read/write of fixed
- * {@link Store#PAGE_SIZE} pages plus root-id metadata.
- * <p>
- * Package-private on purpose — {@link BufferedPool} is the only {@link Store} implementation.
- * It serializes all disc I/O through its per-frame {@code ioLock}, so this class performs no
- * locking of its own and must only be reached via {@code BufferedPool}. Callers of the raw
- * methods are responsible for holding the relevant frame's {@code ioLock} to avoid torn reads
- * and writes.
- */
 final class DiscStore implements AutoCloseable {
     private static final long TREE_ROOT_FILE_POSITION = 0;
 
@@ -34,11 +24,6 @@ final class DiscStore implements AutoCloseable {
         checkAndInitTree();
     }
 
-    /**
-     * Read a raw {@code PAGE_SIZE} page from disc into a fresh buffer (positioned at 0).
-     * Package-private: used by {@link BufferedPool} to fill cache frames. The caller must hold
-     * the relevant frame's {@code ioLock} to avoid a torn read.
-     */
     ByteBuffer readRawPage(long id) {
         ByteBuffer buffer = ByteBuffer.wrap(new byte[Store.PAGE_SIZE]);
         try {
@@ -50,12 +35,6 @@ final class DiscStore implements AutoCloseable {
         return buffer;
     }
 
-    /**
-     * Write a full {@code PAGE_SIZE} page to disc at the page's offset. The buffer is rewound
-     * first and {@code PAGE_SIZE} bytes are written. Package-private: used by {@link
-     * BufferedPool} to flush dirty frames. The caller must hold the relevant frame's
-     * {@code ioLock} to avoid a torn write.
-     */
     void writeRawPage(long id, ByteBuffer buffer) {
         buffer.rewind();
         try {
@@ -65,12 +44,10 @@ final class DiscStore implements AutoCloseable {
         }
     }
 
-    /** Backs {@link BufferedPool#nodeIdGenerator()}: monotonically increasing page ids (>= 1). */
     Supplier<Long> nodeIdGenerator() {
         return nextPageId::getAndIncrement;
     }
 
-    /** Backs {@link BufferedPool#updateRootId(long)}: writes the root id to page 0. */
     void updateRootId(long id) {
         ByteBuffer buffer = ByteBuffer.wrap(new byte[Long.BYTES]);
         buffer.putLong(id);
@@ -83,7 +60,6 @@ final class DiscStore implements AutoCloseable {
         rootId.set(id);
     }
 
-    /** Backs {@link BufferedPool#rootId()}. */
     long rootId() {
         return rootId.get();
     }

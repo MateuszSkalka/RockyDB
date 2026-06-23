@@ -8,6 +8,10 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -173,5 +177,117 @@ class BufferedPoolTest {
         assertThrows(BufferExhaustedException.class, () -> pool.readNode(rootId + 1));
 
         held.close();
+    }
+
+    @Test
+    void deleteRemovesKey() throws Exception {
+        pool = new BufferedPool(dbFile, 16);
+        BLinkTree tree = new BLinkTree(pool);
+        tree.addValue(v("a"), v("1"));
+        tree.addValue(v("b"), v("2"));
+
+        tree.delete(v("a"));
+
+        assertNull(tree.get(v("a")));
+        assertEquals(v("2"), tree.get(v("b")));
+    }
+
+    @Test
+    void deleteAbsentKeyIsNoop() throws Exception {
+        pool = new BufferedPool(dbFile, 16);
+        BLinkTree tree = new BLinkTree(pool);
+        tree.addValue(v("a"), v("1"));
+
+        tree.delete(v("missing"));
+
+        assertEquals(v("1"), tree.get(v("a")));
+        assertNull(tree.get(v("missing")));
+    }
+
+    @Test
+    void deleteEmptiedLeafSelfHealsOnReinsert() throws Exception {
+        pool = new BufferedPool(dbFile, 16);
+        BLinkTree tree = new BLinkTree(pool);
+        tree.addValue(v("a"), v("1"));
+
+        tree.delete(v("a"));
+        assertNull(tree.get(v("a")));
+
+        tree.addValue(v("a"), v("2"));
+
+        assertEquals(v("2"), tree.get(v("a")));
+    }
+
+    @Test
+    void deleteAcrossSplitsLeavesRemainingKeysCorrect() throws Exception {
+        pool = new BufferedPool(dbFile, 64);
+        BLinkTree tree = new BLinkTree(pool);
+        Value bigValue = new Value(new byte[200]);
+        int count = 400;
+
+        for (int i = 0; i < count; i++) {
+            tree.addValue(v("key" + i), bigValue);
+        }
+
+        for (int i = 0; i < count; i += 2) {
+            tree.delete(v("key" + i));
+        }
+
+        for (int i = 0; i < count; i++) {
+            if (i % 2 == 0) {
+                assertNull(tree.get(v("key" + i)), "deleted key " + i + " still present");
+            } else {
+                assertEquals(bigValue, tree.get(v("key" + i)), "wrong value for key " + i);
+            }
+        }
+    }
+
+    @Test
+    void concurrentInsertsAndDeletesStayConsistent() throws Exception {
+        pool = new BufferedPool(dbFile, 128);
+        BLinkTree tree = new BLinkTree(pool);
+        Value bigValue = new Value(new byte[200]);
+        int keyCount = 500;
+        int threads = 8;
+
+        // Seed the even keys so deletes have a target even under contention.
+        for (int i = 0; i < keyCount; i += 2) {
+            tree.addValue(v("key" + i), bigValue);
+        }
+
+        ExecutorService exec = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<?>> futures = new ArrayList<>();
+            for (int t = 0; t < threads; t++) {
+                final int offset = t;
+                futures.add(exec.submit(() -> {
+                    start.await();
+                    // Each key is owned by exactly one thread (i % threads == offset), so the
+                    // final state is deterministic: even keys end up deleted, odd keys inserted.
+                    for (int i = offset; i < keyCount; i += threads) {
+                        tree.addValue(v("key" + i), bigValue);
+                        if (i % 2 == 0) {
+                            tree.delete(v("key" + i));
+                        }
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> f : futures) {
+                f.get();   // surface any worker exception
+            }
+        } finally {
+            exec.shutdown();
+        }
+
+        for (int i = 0; i < keyCount; i++) {
+            if (i % 2 == 0) {
+                assertNull(tree.get(v("key" + i)), "deleted key " + i + " still present");
+            } else {
+                assertEquals(bigValue, tree.get(v("key" + i)), "wrong value for key " + i);
+            }
+        }
     }
 }
