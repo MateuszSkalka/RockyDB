@@ -5,9 +5,27 @@ import java.util.Objects;
 
 public record Value(byte[] bytes) implements Comparable<Value> {
 
+    /**
+     * A sentinel representing positive infinity (used as the fence of rightmost nodes, so their
+     * keyspace bound never grows). Identified by {@code bytes == null}; compares greater than any
+     * real key.
+     */
+    public static Value infinity() {
+        return new Value(null);
+    }
+
+    public boolean isInfinite() {
+        return bytes == null;
+    }
+
     @Override
     public int compareTo(Value o) {
         if (o == null) return 1;
+        boolean thisInf = this.bytes == null;
+        boolean oInf = o.bytes == null;
+        if (thisInf && oInf) return 0;
+        if (thisInf) return 1;  // +inf > everything
+        if (oInf) return -1;    // everything < +inf
         return Arrays.compare(this.bytes, o.bytes);
     }
 

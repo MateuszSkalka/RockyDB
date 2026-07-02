@@ -80,7 +80,7 @@ final class DiscStore implements AutoCloseable {
     private void checkAndInitTree() {
         if (rootId.get() == -1) {
             long id = nextPageId.getAndIncrement();
-            Node root = new LeafNode(id, 1, new Value[]{}, new Value[]{}, -1L);
+            Node root = new LeafNode(id, 1, new Value[]{}, new Value[]{}, -1L, Value.infinity(), false);
             writeRawPage(id, PageCodec.serialize(root));
             updateRootId(id);
         }

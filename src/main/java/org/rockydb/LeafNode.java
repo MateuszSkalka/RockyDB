@@ -6,34 +6,40 @@ import java.util.function.Supplier;
 public class LeafNode extends Node {
     private final Value[] keys;
     private final Value[] values;
+    private final Value fence;
 
-    public LeafNode(
-        long id,
-        int height,
-        Value[] keys,
-        Value[] values,
-        long link
-    ) {
-        super(id, true, height, link);
+    public LeafNode(long id, int height, Value[] keys, Value[] values, long link) {
+        this(id, height, keys, values, link, biggestOf(keys), false);
+    }
+
+    public LeafNode(long id, int height, Value[] keys, Value[] values, long link, boolean marked) {
+        this(id, height, keys, values, link, biggestOf(keys), marked);
+    }
+
+    public LeafNode(long id, int height, Value[] keys, Value[] values, long link, Value fence, boolean marked) {
+        super(id, true, height, link, marked);
         this.keys = keys;
         this.values = values;
+        this.fence = fence;
     }
 
     @Override
     public boolean shouldGoRight(Value key) {
-        if (keys.length == 0) return false;
-        return keys[keys.length - 1].compareTo(key) < 0 && link() != -1;
+        if (marked()) return true;
+        if (fence == null || link() == -1) return false;
+        return key.compareTo(fence) > 0; // +inf fence: key < +inf always, so never go right
     }
 
     @Override
     public Value biggestKey() {
-        return keys[keys.length - 1];
+        return fence;
     }
 
     @Override
     public long nextNode(Value key) {
+        if (marked()) return link();
         if (shouldGoRight(key)) return link();
-        else return -1;
+        return -1;
     }
 
     @Override
@@ -49,10 +55,14 @@ public class LeafNode extends Node {
         return values;
     }
 
+    public Value fence() {
+        return fence;
+    }
+
     public Value getValueForKey(Value key) {
         int idx = Arrays.binarySearch(keys, key);
         if (idx > -1) return values[idx];
-        else return null;
+        return null;
     }
 
     public CreationResult copyWith(Value keyToAdd, Value valueToAdd, Supplier<Long> nodeIdGenerator) {
@@ -68,35 +78,65 @@ public class LeafNode extends Node {
         }
     }
 
-    /**
-     * Returns a new leaf node with {@code key} and its value physically removed, or {@code null}
-     * if this leaf does not contain {@code key} (so the caller can skip the write).
-     * <p>
-     * Deletion-only: the node is never merged into or redistributed from a sibling, even when the
-     * removal empties it. An empty leaf stays linked in the chain — harmless to {@code get}
-     * ({@code shouldGoRight} returns {@code false} on an empty node) and self-healing on the next
-     * insert — and its parent separator is left untouched, since a stale separator remains a
-     * correct partition point.
-     */
     public LeafNode without(Value key) {
         int idx = Arrays.binarySearch(keys, key);
         if (idx < 0) return null;
-        return new LeafNode(id(), height(), remove(keys, idx), remove(values, idx), link());
+        return new LeafNode(id(), height(), remove(keys, idx), remove(values, idx), link(), fence, marked());
+    }
+
+    @Override
+    public boolean isUnderfilled() {
+        int body = size(keys) + size(values) + Store.LINK_POINTER_SIZE + fenceOverhead();
+        return needsMerge(body);
+    }
+
+    @Override
+    public boolean canMergeWith(Node right) {
+        LeafNode r = (LeafNode) right;
+        int merged = size(keys) + size(r.keys) + size(values) + size(r.values) + Store.LINK_POINTER_SIZE + r.fenceOverhead();
+        return !needsSplit(merged);
+    }
+
+    @Override
+    public Node mergeWithRight(Node right) {
+        LeafNode r = (LeafNode) right;
+        Value[] mergedKeys = concat(keys, r.keys);
+        Value[] mergedValues = concat(values, r.values);
+        return new LeafNode(id(), height(), mergedKeys, mergedValues, r.link(), r.fence, marked());
+    }
+
+    public static LeafNode tombstone(long id, int height, long survivorId) {
+        return new LeafNode(id, height, new Value[0], new Value[0], survivorId, Value.infinity(), true);
+    }
+
+    /** Serialized size of the fence: prefix + bytes (0 for +inf). */
+    int fenceOverhead() {
+        return Store.KEY_PREFIX_SIZE + (fence == null || fence.isInfinite() ? 0 : fence.bytes().length);
+    }
+
+    private Value[] concat(Value[] left, Value[] right) {
+        Value[] out = new Value[left.length + right.length];
+        System.arraycopy(left, 0, out, 0, left.length);
+        System.arraycopy(right, 0, out, left.length, right.length);
+        return out;
     }
 
     private CreationResult splitIfNeeded(Value[] keys, Value[] values, Supplier<Long> nodeIdGenerator) {
-        int newSize = size(keys) + size(values) + Store.LINK_POINTER_SIZE;
+        int biggestRecordSize = keys.length == 0 ? 0 : Store.KEY_PREFIX_SIZE + keys[keys.length - 1].bytes().length;
+        int overhead = Math.max(fenceOverhead(), biggestRecordSize);
+        int newSize = size(keys) + size(values) + Store.LINK_POINTER_SIZE + overhead;
         if (needsSplit(newSize)) {
-            return split(keys, values, newSize, nodeIdGenerator);
+            return split(keys, values, nodeIdGenerator);
         } else {
-            return new CreationResult(new LeafNode(id(), height(), keys, values, link()), null, null);
+            return new CreationResult(new LeafNode(id(), height(), keys, values, link(), fence, marked()), null, null, null);
         }
     }
 
-    private CreationResult split(Value[] keys, Value[] values, int newSize, Supplier<Long> nodeIdGenerator) {
+    private CreationResult split(Value[] keys, Value[] values, Supplier<Long> nodeIdGenerator) {
         int keyMid = 0;
         int leftSize = sizeOfCell(0, keys, values);
-        int rightSize = newSize - leftSize;
+        int totalCells = size(keys) + size(values);
+        int rightSize = totalCells - leftSize;
         while (
             keyMid < keys.length - 1 &&
                 Math.abs(rightSize - leftSize) >
@@ -110,21 +150,33 @@ public class LeafNode extends Node {
         Value promotedValue = keys[keyMid];
         Value[] leftKeys = new Value[keyMid + 1];
         Value[] leftValues = new Value[leftKeys.length];
-
         Value[] rightKeys = new Value[keys.length - leftKeys.length];
         Value[] rightValues = new Value[rightKeys.length];
 
         System.arraycopy(keys, 0, leftKeys, 0, leftKeys.length);
-        System.arraycopy(values, 0, leftValues, 0, leftValues.length);
+        System.arraycopy(values, 0, leftValues, 0, leftKeys.length);
         System.arraycopy(keys, keyMid + 1, rightKeys, 0, rightKeys.length);
-        System.arraycopy(values, leftValues.length, rightValues, 0, rightValues.length);
+        System.arraycopy(values, leftKeys.length, rightValues, 0, rightKeys.length);
 
+        Value biggestRecord = keys[keys.length - 1];
+        Value rightFence = max(fence, biggestRecord);
         long rightNodeId = nodeIdGenerator.get();
         return new CreationResult(
-            new LeafNode(id(), height(), leftKeys, leftValues, rightNodeId),
-            new LeafNode(rightNodeId, height(), rightKeys, rightValues, this.link()),
-            promotedValue
+            new LeafNode(id(), height(), leftKeys, leftValues, rightNodeId, promotedValue, marked()),
+            new LeafNode(rightNodeId, height(), rightKeys, rightValues, this.link(), rightFence, marked()),
+            promotedValue,
+            fence
         );
+    }
+
+    private static Value biggestOf(Value[] keys) {
+        return keys.length == 0 ? null : keys[keys.length - 1];
+    }
+
+    private static Value max(Value a, Value b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        return a.compareTo(b) >= 0 ? a : b;
     }
 
     private Value[] insert(Value[] array, Value e, int idx) {

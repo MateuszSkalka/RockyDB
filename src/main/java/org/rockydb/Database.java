@@ -47,7 +47,6 @@ public class Database implements Closeable {
             }
             catalog.delete(nameKey);
             tables.remove(name);
-            // NOTE: the dropped tree's pages are not reclaimed (no freelist; monotonic ids).
         } finally {
             catalogLock.unlock();
         }

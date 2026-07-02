@@ -14,13 +14,25 @@ public class BranchNode extends Node {
             long[] valuePointers,
             long link
     ) {
-        super(id, false, height, link);
+        this(id, height, keys, valuePointers, link, false);
+    }
+
+    public BranchNode(
+            Long id,
+            int height,
+            Value[] keys,
+            long[] valuePointers,
+            long link,
+            boolean marked
+    ) {
+        super(id, false, height, link, marked);
         this.keys = keys;
         this.pointers = valuePointers;
     }
 
     @Override
     public long nextNode(Value key) {
+        if (marked()) return link(); // tombstone: link() holds the survivor id; redirect to it
         int idx = Arrays.binarySearch(keys, key);
         idx = idx < 0 ? -(idx + 1) : idx;
         if (idx == pointers.length && link() != -1) {
@@ -55,18 +67,102 @@ public class BranchNode extends Node {
         return pointers;
     }
 
-    public CreationResult copyWith(Value key, long pointer, Value newMax, Supplier<Long> nodeIdGenerator) {
-        compareAndSetBiggestKey(newMax);
-        int idx = Arrays.binarySearch(keys, key);
-        if (idx > -1) {
-            pointers[idx] = pointer;
-            return splitIfNeeded(keys, pointers, nodeIdGenerator);
-        } else {
-            idx = -(idx + 1);
-            Value[] newKeys = insert(key, idx);
-            long[] newPointers = insert(pointer, idx + 1);
-            return splitIfNeeded(newKeys, newPointers, nodeIdGenerator);
+    /**
+     * Propagate a split of a child into this branch. The child's old fence {@code oldFence} (its
+     * separator before the split) is found by binary search; that slot's separator becomes
+     * {@code promotedValue}, and the new sibling {@code newChildId} (fence {@code newChildMax}) is
+     * inserted immediately to its right. With fence keys the separator is always exact (+∞ for the
+     * rightmost), so a key-based lookup is unambiguous.
+     */
+    public CreationResult copyWith(Value oldFence, Value promotedValue, long newChildId, Value newChildMax, Supplier<Long> nodeIdGenerator) {
+        int idx = Arrays.binarySearch(keys, oldFence);
+        if (idx < 0) {
+            throw new IllegalStateException("old fence not found in branch " + id());
         }
+        Value[] newKeys = new Value[keys.length + 1];
+        System.arraycopy(keys, 0, newKeys, 0, idx);
+        newKeys[idx] = promotedValue;
+        newKeys[idx + 1] = newChildMax;
+        System.arraycopy(keys, idx + 1, newKeys, idx + 2, keys.length - idx - 1);
+
+        long[] newPointers = new long[pointers.length + 1];
+        System.arraycopy(pointers, 0, newPointers, 0, idx + 1);
+        newPointers[idx + 1] = newChildId;
+        System.arraycopy(pointers, idx + 1, newPointers, idx + 2, pointers.length - idx - 1);
+
+        return splitIfNeeded(newKeys, newPointers, nodeIdGenerator);
+    }
+
+    /**
+     * Returns a copy of this branch with the downlink for the child whose separator (fence) is
+     * {@code fence} removed, together with the separator to that child's left. Located by binary
+     * search. Returns {@code null} if not present, or if removal would empty the node.
+     */
+    public BranchNode removeDownlink(Value fence) {
+        int idx = Arrays.binarySearch(keys, fence);
+        if (idx < 0 || pointers.length == 1) {
+            return null;
+        }
+        int keyToRemove = (idx == 0) ? 0 : idx - 1;
+        return new BranchNode(id(), height(), remove(keys, keyToRemove), remove(pointers, idx), link());
+    }
+
+    /**
+     * True when this branch's serialized body falls below the merge threshold, making it a candidate
+     * for merging into its right sibling (during a delete cascade).
+     */
+    @Override
+    public boolean isUnderfilled() {
+        int body = size(keys) + size(pointers) + Store.LINK_POINTER_SIZE;
+        return needsMerge(body);
+    }
+
+    /**
+     * True when this branch and {@code right} would fit together in a single node. {@code right} is
+     * assumed to be this branch's current right sibling.
+     */
+    @Override
+    public boolean canMergeWith(Node right) {
+        BranchNode r = (BranchNode) right;
+        int merged = size(keys) + size(r.keys) + size(pointers) + size(r.pointers) + Store.LINK_POINTER_SIZE;
+        return !needsSplit(merged);
+    }
+
+    /**
+     * Returns a new branch that absorbs {@code right}'s children into this branch. The merged branch
+     * keeps this branch's id (survivor) and takes {@code right}'s right link, so the sibling chain
+     * skips {@code right}. The old high-key of this branch (the separator between the two) is retained
+     * as the internal separator between this branch's last child and {@code right}'s first child.
+     * {@code right} must subsequently be replaced by a tombstone.
+     */
+    @Override
+    public Node mergeWithRight(Node right) {
+        BranchNode r = (BranchNode) right;
+        Value[] mergedKeys = concat(keys, r.keys);
+        long[] mergedPointers = concat(pointers, r.pointers);
+        return new BranchNode(id(), height(), mergedKeys, mergedPointers, r.link());
+    }
+
+    /**
+     * A tombstone for a merged-away branch: empty, marked, link repurposed to redirect readers to
+     * {@code survivorId}.
+     */
+    public static BranchNode tombstone(long id, int height, long survivorId) {
+        return new BranchNode(id, height, new Value[0], new long[0], survivorId, true);
+    }
+
+    private Value[] concat(Value[] left, Value[] right) {
+        Value[] out = new Value[left.length + right.length];
+        System.arraycopy(left, 0, out, 0, left.length);
+        System.arraycopy(right, 0, out, left.length, right.length);
+        return out;
+    }
+
+    private long[] concat(long[] left, long[] right) {
+        long[] out = new long[left.length + right.length];
+        System.arraycopy(left, 0, out, 0, left.length);
+        System.arraycopy(right, 0, out, left.length, right.length);
+        return out;
     }
 
     private CreationResult splitIfNeeded(Value[] keys, long[] pointers, Supplier<Long> nodeIdGenerator) {
@@ -74,7 +170,7 @@ public class BranchNode extends Node {
         if (needsSplit(newSize)) {
             return split(keys, pointers, newSize, nodeIdGenerator);
         } else {
-            return new CreationResult(new BranchNode(id(), height(), keys, pointers, link()), null, null);
+            return new CreationResult(new BranchNode(id(), height(), keys, pointers, link()), null, null, null);
         }
     }
 
@@ -108,34 +204,26 @@ public class BranchNode extends Node {
         return new CreationResult(
                 new BranchNode(id(), height(), leftKeys, leftPointers, rightNodeId),
                 new BranchNode(rightNodeId, height(), rightKeys, rightPointers, link()),
-                promotedValue
+                promotedValue,
+                keys[keys.length - 1]
         );
     }
 
-    private void compareAndSetBiggestKey(Value key) {
-        if (biggestKey().compareTo(key) < 0) {
-            keys[keys.length - 1] = key;
-        }
+    private Value[] remove(Value[] array, int idx) {
+        Value[] out = new Value[array.length - 1];
+        System.arraycopy(array, 0, out, 0, idx);
+        System.arraycopy(array, idx + 1, out, idx, array.length - idx - 1);
+        return out;
     }
 
-    private Value[] insert(Value key, int idx) {
-        Value[] newKeys = new Value[keys.length + 1];
-        System.arraycopy(keys, 0, newKeys, 0, idx);
-        newKeys[idx] = key;
-        System.arraycopy(keys, idx, newKeys, idx + 1, keys.length - idx);
-        return newKeys;
-    }
-
-    private long[] insert(long pointer, int idx) {
-        long[] newPointers = new long[pointers.length + 1];
-        System.arraycopy(pointers, 0, newPointers, 0, idx);
-        newPointers[idx] = pointer;
-        System.arraycopy(pointers, idx, newPointers, idx + 1, pointers.length - idx);
-        return newPointers;
+    private long[] remove(long[] array, int idx) {
+        long[] out = new long[array.length - 1];
+        System.arraycopy(array, 0, out, 0, idx);
+        System.arraycopy(array, idx + 1, out, idx, array.length - idx - 1);
+        return out;
     }
 
     private int sizeOfCell(int keyIdx, Value[] keys) {
-        return Store.KEY_PREFIX_SIZE + keys[keyIdx].bytes().length + Store.VALUE_POINTER_SIZE;
-
+        return Store.KEY_PREFIX_SIZE + (keys[keyIdx].isInfinite() ? 0 : keys[keyIdx].bytes().length) + Store.VALUE_POINTER_SIZE;
     }
 }

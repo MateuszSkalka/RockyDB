@@ -151,4 +151,72 @@ class LeafNodeTest {
         assertArrayEquals(new Value[]{keyB}, right.getKeys());
         assertEquals(-1L, right.link());
     }
+
+    @Test
+    void isUnderfilledReturnsTrueForSmallLeaf() {
+        LeafNode given = new LeafNode(1, 1, new Value[]{v("a")}, new Value[]{v("1")}, -1L);
+
+        assertTrue(given.isUnderfilled());
+    }
+
+    @Test
+    void isUnderfilledReturnsFalseForLargeLeaf() {
+        Value bigKey = new Value(new byte[4000]);
+        Value bigVal = new Value(new byte[4000]);
+        LeafNode given = new LeafNode(1, 1, new Value[]{bigKey}, new Value[]{bigVal}, -1L);
+
+        assertFalse(given.isUnderfilled());
+    }
+
+    @Test
+    void canMergeWithReturnsTrueWhenCombinedFits() {
+        LeafNode given = new LeafNode(1, 1, new Value[]{v("a")}, new Value[]{v("1")}, 2L);
+        LeafNode right = new LeafNode(2, 1, new Value[]{v("m")}, new Value[]{v("13")}, -1L);
+
+        assertTrue(given.canMergeWith(right));
+    }
+
+    @Test
+    void canMergeWithReturnsFalseWhenCombinedOverflows() {
+        Value keyA = new Value(new byte[4000]);
+        Value valA = new Value(new byte[4000]);
+        Value keyB = bytesKey(4000, 1);
+        Value valB = new Value(new byte[4000]);
+        LeafNode given = new LeafNode(1, 1, new Value[]{keyA}, new Value[]{valA}, 2L);
+        LeafNode right = new LeafNode(2, 1, new Value[]{keyB}, new Value[]{valB}, -1L);
+
+        assertFalse(given.canMergeWith(right));
+    }
+
+    @Test
+    void mergeWithRightConcatenatesEntriesAndInheritsRightLink() {
+        LeafNode given = new LeafNode(1, 1, new Value[]{v("a"), v("c")}, new Value[]{v("1"), v("3")}, 2L);
+        LeafNode right = new LeafNode(2, 1, new Value[]{v("m"), v("z")}, new Value[]{v("13"), v("26")}, 99L);
+
+        LeafNode merged = (LeafNode) given.mergeWithRight(right);
+
+        assertEquals(1L, merged.id()); // survivor keeps this leaf's id
+        assertArrayEquals(new Value[]{v("a"), v("c"), v("m"), v("z")}, merged.getKeys());
+        assertArrayEquals(new Value[]{v("1"), v("3"), v("13"), v("26")}, merged.getValues());
+        assertEquals(99L, merged.link()); // inherits the absorbed sibling's right link
+    }
+
+    @Test
+    void tombstoneIsMarkedEmptyAndRedirectsToSurvivor() {
+        LeafNode tombstone = LeafNode.tombstone(5, 1, 7L);
+
+        assertEquals(5L, tombstone.id());
+        assertTrue(tombstone.marked());
+        assertEquals(0, tombstone.getKeys().length);
+        assertEquals(7L, tombstone.link()); // link repurposed as survivor redirect
+        assertEquals(7L, tombstone.nextNode(v("anything"))); // redirect regardless of key
+    }
+
+    @Test
+    void nextNodeRedirectsToSurvivorWhenMarked() {
+        LeafNode tombstone = LeafNode.tombstone(5, 1, 7L);
+
+        assertEquals(7L, tombstone.nextNode(v("a")));
+        assertEquals(7L, tombstone.nextNode(v("z")));
+    }
 }

@@ -67,5 +67,20 @@ class NodeTest {
         public Value biggestKey() {
             return null;
         }
+
+        @Override
+        public boolean isUnderfilled() {
+            return false;
+        }
+
+        @Override
+        public boolean canMergeWith(Node right) {
+            return false;
+        }
+
+        @Override
+        public Node mergeWithRight(Node right) {
+            return this;
+        }
     }
 }
