@@ -51,6 +51,10 @@ public class BranchNode extends Node {
 
     @Override
     public boolean shouldGoRight(Value key) {
+        // A marked branch is a tombstone: link() redirects to the survivor, so follow it regardless
+        // of the key. Mirrors LeafNode.shouldGoRight. (Marked branches are always empty, so this also
+        // keeps the keys[last] access below safe; live branches always have at least one separator.)
+        if (marked()) return true;
         return keys[keys.length - 1].compareTo(key) < 0 && link() != -1;
     }
 

@@ -30,7 +30,7 @@ public class Database implements Closeable {
                 throw new IllegalStateException("Table already exists: " + name);
             }
             long rootId = pool.nodeIdGenerator().get();
-            pool.writeNode(new LeafNode(rootId, 1, new Value[]{}, new Value[]{}, -1L));
+            pool.writeNode(new LeafNode(rootId, 1, new Value[]{}, new Value[]{}, -1L, Value.infinity(), false));
             catalog.addValue(nameKey, encodeRootId(rootId));
             tables.put(name, new BLinkTree(pool, new TableRootRef(nameKey, rootId)));
         } finally {

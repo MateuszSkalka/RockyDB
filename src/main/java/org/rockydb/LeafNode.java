@@ -122,9 +122,9 @@ public class LeafNode extends Node {
     }
 
     private CreationResult splitIfNeeded(Value[] keys, Value[] values, Supplier<Long> nodeIdGenerator) {
-        int biggestRecordSize = keys.length == 0 ? 0 : Store.KEY_PREFIX_SIZE + keys[keys.length - 1].bytes().length;
-        int overhead = Math.max(fenceOverhead(), biggestRecordSize);
-        int newSize = size(keys) + size(values) + Store.LINK_POINTER_SIZE + overhead;
+        // Serialized body = keys + values + link + fence; size() already counts every key, so no
+        // extra biggest-record term is needed. This matches isUnderfilled() and PageCodec exactly.
+        int newSize = size(keys) + size(values) + Store.LINK_POINTER_SIZE + fenceOverhead();
         if (needsSplit(newSize)) {
             return split(keys, values, nodeIdGenerator);
         } else {

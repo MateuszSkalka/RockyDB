@@ -265,7 +265,7 @@ class BLinkTreeTest {
         verify(parentHandle).set(parentSet.capture());
         BranchNode updatedRoot = (BranchNode) parentSet.getValue();
         assertArrayEquals(new long[]{1L}, updatedRoot.getPointers());
-        assertArrayEquals(new Value[]{v("z")}, updatedRoot.getKeys());
+        assertArrayEquals(new Value[]{Value.infinity()}, updatedRoot.getKeys());
 
         verify(leafHandle).close();
         verify(rightHandle).close();
