@@ -80,41 +80,34 @@ class BranchNodeTest {
     }
 
     @Test
-    void copyWithInsertsSeparatorAndPointerWithoutSplit() {
-        BranchNode given = new BranchNode(1L,2, new Value[]{v("a"), v("c")}, new long[]{10, 20}, -1L);
+    void copyWithPropagatesChildSplitByFence() {
+        // child 99 (separator "m") splits: survivor 99 takes new fence "b", new child 15 takes old fence "m".
+        BranchNode given = new BranchNode(1L, 2, new Value[]{v("a"), v("m"), v("z")}, new long[]{10, 99, 20}, -1L);
 
-        Node.CreationResult result = given.copyWith(v("b"), 15, v("c"), noAllocation());
+        Node.CreationResult result = given.copyWith(v("m"), v("b"), 15L, v("m"), noAllocation());
 
         assertNull(result.right());
         assertNull(result.promotedValue());
         BranchNode left = (BranchNode) result.left();
-        assertArrayEquals(new Value[]{v("a"), v("b"), v("c")}, left.getKeys());
-        assertArrayEquals(new long[]{10, 20, 15}, left.getPointers());
+        assertArrayEquals(new Value[]{v("a"), v("b"), v("m"), v("z")}, left.getKeys());
+        assertArrayEquals(new long[]{10, 99, 15, 20}, left.getPointers());
     }
 
     @Test
-    void copyWithReplacesPointerWhenKeyAlreadyPresent() {
-        BranchNode given = new BranchNode(1L,2, new Value[]{v("a"), v("c")}, new long[]{10, 20}, -1L);
+    void copyWithUpdatesLeftmostSlotByFence() {
+        // child 10 (separator "a") splits: promoted "m", new child 15 with fence "a".
+        BranchNode given = new BranchNode(1L, 2, new Value[]{v("a"), v("m"), v("z")}, new long[]{10, 99, 20}, -1L);
 
-        Node.CreationResult result = given.copyWith(v("a"), 99, v("c"), noAllocation());
-
-        assertNull(result.right());
-        BranchNode left = (BranchNode) result.left();
-        assertArrayEquals(new Value[]{v("a"), v("c")}, left.getKeys());
-        assertArrayEquals(new long[]{99, 20}, left.getPointers());
-    }
-
-    @Test
-    void copyWithUpdatesBiggestKeyWhenNewMaxIsLarger() {
-        BranchNode given = new BranchNode(1L,2, new Value[]{v("a"), v("c")}, new long[]{10, 20}, -1L);
-
-        Node.CreationResult result = given.copyWith(v("b"), 15, v("z"), noAllocation());
+        Node.CreationResult result = given.copyWith(v("a"), v("m"), 15L, v("a"), noAllocation());
 
         assertNull(result.right());
         BranchNode left = (BranchNode) result.left();
-        assertArrayEquals(new Value[]{v("a"), v("b"), v("z")}, left.getKeys());
-        assertArrayEquals(new long[]{10, 20, 15}, left.getPointers());
-        assertEquals(v("z"), left.biggestKey());
+        long[] ptrs = left.getPointers();
+        assertEquals(4, ptrs.length);
+        assertEquals(10L, ptrs[0]);
+        assertEquals(15L, ptrs[1]);
+        assertEquals(99L, ptrs[2]);
+        assertEquals(20L, ptrs[3]);
     }
 
     @Test
@@ -124,20 +117,85 @@ class BranchNodeTest {
         Value big2 = bytesKey(4000, 2);
         BranchNode given = new BranchNode(1L, 2, new Value[]{big1, big2}, new long[]{10, 20}, -1L);
 
-        Node.CreationResult result = given.copyWith(bigMid, 30, big2, () -> 777L);
+        Node.CreationResult result = given.copyWith(big1, bigMid, 30L, big2, () -> 777L);
 
-        assertEquals(bigMid, result.promotedValue());
+        assertNotNull(result.promotedValue());
         assertNotNull(result.right());
         assertEquals(777L, result.right().id());
+        assertEquals(1L, result.left().id());
+        assertEquals(777L, result.left().link());
+    }
 
-        BranchNode left = (BranchNode) result.left();
-        assertArrayEquals(new Value[]{big1, bigMid}, left.getKeys());
-        assertArrayEquals(new long[]{10, 20}, left.getPointers());
-        assertEquals(777L, left.link());
+    @Test
+    void removeDownlinkRemovesChildAndLeftSeparator() {
+        BranchNode given = new BranchNode(1L, 2, new Value[]{v("a"), v("c"), v("e")}, new long[]{10, 20, 30}, -1L);
 
-        BranchNode right = (BranchNode) result.right();
-        assertArrayEquals(new Value[]{big2}, right.getKeys());
-        assertArrayEquals(new long[]{30}, right.getPointers());
-        assertEquals(-1L, right.link());
+        BranchNode result = given.removeDownlink(v("c"));
+
+        assertArrayEquals(new long[]{10, 30}, result.getPointers());
+        assertArrayEquals(new Value[]{v("c"), v("e")}, result.getKeys());
+    }
+
+    @Test
+    void removeDownlinkRemovesLeftmostChildAndItsHighKey() {
+        BranchNode given = new BranchNode(1L, 2, new Value[]{v("a"), v("c"), v("e")}, new long[]{10, 20, 30}, -1L);
+
+        BranchNode result = given.removeDownlink(v("a"));
+
+        assertArrayEquals(new long[]{20, 30}, result.getPointers());
+        assertArrayEquals(new Value[]{v("c"), v("e")}, result.getKeys());
+    }
+
+    @Test
+    void removeDownlinkReturnsNullWhenFenceAbsent() {
+        BranchNode given = new BranchNode(1L, 2, new Value[]{v("a"), v("c")}, new long[]{10, 20}, -1L);
+
+        assertNull(given.removeDownlink(v("z")));
+    }
+
+    @Test
+    void removeDownlinkReturnsNullWhenItWouldEmptyTheNode() {
+        BranchNode given = new BranchNode(1L, 2, new Value[]{v("a")}, new long[]{10}, -1L);
+
+        assertNull(given.removeDownlink(v("a")));
+    }
+
+    @Test
+    void isUnderfilledReturnsTrueForSmallBranch() {
+        BranchNode given = new BranchNode(1L, 2, new Value[]{v("a"), v("c")}, new long[]{10, 20}, -1L);
+
+        assertTrue(given.isUnderfilled());
+    }
+
+    @Test
+    void canMergeWithReturnsTrueWhenCombinedFits() {
+        BranchNode given = new BranchNode(1L, 2, new Value[]{v("a")}, new long[]{10}, 2L);
+        BranchNode right = new BranchNode(2L, 2, new Value[]{v("m")}, new long[]{30}, -1L);
+
+        assertTrue(given.canMergeWith(right));
+    }
+
+    @Test
+    void mergeWithRightConcatenatesKeysAndPointersAndInheritsRightLink() {
+        BranchNode given = new BranchNode(1L, 2, new Value[]{v("a"), v("c")}, new long[]{10, 20}, 2L);
+        BranchNode right = new BranchNode(2L, 2, new Value[]{v("e"), v("g")}, new long[]{30, 40}, 99L);
+
+        BranchNode merged = (BranchNode) given.mergeWithRight(right);
+
+        assertEquals(1L, merged.id());
+        assertArrayEquals(new Value[]{v("a"), v("c"), v("e"), v("g")}, merged.getKeys());
+        assertArrayEquals(new long[]{10, 20, 30, 40}, merged.getPointers());
+        assertEquals(99L, merged.link());
+    }
+
+    @Test
+    void tombstoneIsMarkedEmptyAndRedirectsToSurvivor() {
+        BranchNode tombstone = BranchNode.tombstone(5L, 2, 7L);
+
+        assertEquals(5L, tombstone.id());
+        assertTrue(tombstone.marked());
+        assertEquals(0, tombstone.getKeys().length);
+        assertEquals(7L, tombstone.link());
+        assertEquals(7L, tombstone.nextNode(v("anything")));
     }
 }

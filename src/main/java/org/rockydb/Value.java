@@ -4,11 +4,23 @@ import java.util.Arrays;
 import java.util.Objects;
 
 public record Value(byte[] bytes) implements Comparable<Value> {
+    public static Value infinity() {
+        return new Value(null);
+    }
+
+    public boolean isInfinite() {
+        return bytes == null;
+    }
 
     @Override
     public int compareTo(Value o) {
         if (o == null) return 1;
-        return Arrays.compare(this.bytes, o.bytes);
+        boolean thisInf = this.bytes == null;
+        boolean oInf = o.bytes == null;
+        if (thisInf && oInf) return 0;
+        if (thisInf) return 1;  // +inf > everything
+        if (oInf) return -1;    // everything < +inf
+        return Arrays.compareUnsigned(this.bytes, o.bytes);
     }
 
     @Override
