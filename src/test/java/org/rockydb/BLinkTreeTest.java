@@ -4,12 +4,22 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class BLinkTreeTest {
+
+    /** Stub {@code allocator()} on a mock Store so both {@code allocate()} and {@code idSupplier()}
+     *  draw from the same id sequence, mirroring the real allocator. */
+    private static void stubAllocator(Store mock, Supplier<Long> ids) {
+        PageAllocator allocator = mock(PageAllocator.class);
+        when(allocator.allocate()).thenAnswer(inv -> ids.get());
+        when(allocator.idSupplier()).thenReturn(ids);
+        when(mock.allocator()).thenReturn(allocator);
+    }
 
     private static Value v(String s) {
         return new Value(s.getBytes());
@@ -60,7 +70,7 @@ class BLinkTreeTest {
         when(store.readNode(1L)).thenReturn(leaf);
         when(store.latchForWrite(1L)).thenReturn(handle);
         when(handle.get()).thenReturn(leaf);
-        when(store.nodeIdGenerator()).thenReturn(() -> 99L);
+        stubAllocator(store, () -> 99L);
         BLinkTree given = new BLinkTree(store);
 
         given.addValue(v("c"), v("3"));
@@ -82,7 +92,7 @@ class BLinkTreeTest {
         when(store.readNode(1L)).thenReturn(leaf);
         when(store.latchForWrite(1L)).thenReturn(handle);
         when(handle.get()).thenThrow(new RuntimeException("boom"));
-        when(store.nodeIdGenerator()).thenReturn(() -> 99L);
+        stubAllocator(store, () -> 99L);
         BLinkTree given = new BLinkTree(store);
 
         assertThrows(RuntimeException.class, () -> given.addValue(v("c"), v("3")));
@@ -103,7 +113,7 @@ class BLinkTreeTest {
         when(store.latchForWrite(2L)).thenReturn(second);
         when(first.get()).thenReturn(leaf1);
         when(second.get()).thenReturn(leaf2);
-        when(store.nodeIdGenerator()).thenReturn(() -> 99L);
+        stubAllocator(store, () -> 99L);
         BLinkTree given = new BLinkTree(store);
 
         given.addValue(v("z"), v("26"));
@@ -134,7 +144,7 @@ class BLinkTreeTest {
         when(leafHandle.get()).thenReturn(leaf);
         when(parentHandle.get()).thenReturn(parent);
         when(store.writeNode(any(Node.class))).thenAnswer(i -> i.getArgument(0));
-        when(store.nodeIdGenerator()).thenReturn(ids::getAndIncrement);
+        stubAllocator(store, ids::getAndIncrement);
         BLinkTree given = new BLinkTree(store);
 
         given.addValue(newKey, newVal);
@@ -162,7 +172,7 @@ class BLinkTreeTest {
         when(store.latchForWrite(1L)).thenReturn(handle);
         when(handle.get()).thenReturn(leaf);
         when(store.writeNode(any(Node.class))).thenAnswer(i -> i.getArgument(0));
-        when(store.nodeIdGenerator()).thenReturn(ids::getAndIncrement);
+        stubAllocator(store, ids::getAndIncrement);
         BLinkTree given = new BLinkTree(store);
 
         given.addValue(newKey, newVal);

@@ -4,12 +4,6 @@ import java.util.Arrays;
 import java.util.Objects;
 
 public record Value(byte[] bytes) implements Comparable<Value> {
-
-    /**
-     * A sentinel representing positive infinity (used as the fence of rightmost nodes, so their
-     * keyspace bound never grows). Identified by {@code bytes == null}; compares greater than any
-     * real key.
-     */
     public static Value infinity() {
         return new Value(null);
     }
@@ -26,7 +20,7 @@ public record Value(byte[] bytes) implements Comparable<Value> {
         if (thisInf && oInf) return 0;
         if (thisInf) return 1;  // +inf > everything
         if (oInf) return -1;    // everything < +inf
-        return Arrays.compare(this.bytes, o.bytes);
+        return Arrays.compareUnsigned(this.bytes, o.bytes);
     }
 
     @Override

@@ -81,10 +81,6 @@ public final class PageCodec {
         }
     }
 
-    private static void writeFence(ByteBuffer buffer, Value fence) {
-        writeValue(buffer, fence);
-    }
-
     private static Value readFence(ByteBuffer buffer) {
         int len = buffer.getInt();
         if (len == -1) return Value.infinity();

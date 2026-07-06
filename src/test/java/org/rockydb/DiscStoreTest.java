@@ -56,11 +56,11 @@ class DiscStoreTest {
     }
 
     @Test
-    void nodeIdGeneratorIsMonotonicallyIncreasing() throws Exception {
+    void allocatorProducesMonotonicallyIncreasingIds() throws Exception {
         try (DiscStore given = openStore()) {
-            long first = given.nodeIdGenerator().get();
-            long second = given.nodeIdGenerator().get();
-            long third = given.nodeIdGenerator().get();
+            long first = given.allocator().allocate();
+            long second = given.allocator().allocate();
+            long third = given.allocator().allocate();
 
             assertTrue(first >= 1);
             assertEquals(first + 1, second);
@@ -80,7 +80,7 @@ class DiscStoreTest {
     @Test
     void reopeningPersistsRootId() throws Exception {
         DiscStore first = openStore();
-        long allocated = first.nodeIdGenerator().get();
+        long allocated = first.allocator().allocate();
         first.updateRootId(allocated);
         first.close();
 

@@ -3,7 +3,7 @@ package org.rockydb;
 import java.util.Arrays;
 import java.util.function.Supplier;
 
-public class LeafNode extends Node {
+public final class LeafNode extends Node {
     private final Value[] keys;
     private final Value[] values;
     private final Value fence;
@@ -109,7 +109,6 @@ public class LeafNode extends Node {
         return new LeafNode(id, height, new Value[0], new Value[0], survivorId, Value.infinity(), true);
     }
 
-    /** Serialized size of the fence: prefix + bytes (0 for +inf). */
     int fenceOverhead() {
         return Store.KEY_PREFIX_SIZE + (fence == null || fence.isInfinite() ? 0 : fence.bytes().length);
     }
@@ -122,8 +121,6 @@ public class LeafNode extends Node {
     }
 
     private CreationResult splitIfNeeded(Value[] keys, Value[] values, Supplier<Long> nodeIdGenerator) {
-        // Serialized body = keys + values + link + fence; size() already counts every key, so no
-        // extra biggest-record term is needed. This matches isUnderfilled() and PageCodec exactly.
         int newSize = size(keys) + size(values) + Store.LINK_POINTER_SIZE + fenceOverhead();
         if (needsSplit(newSize)) {
             return split(keys, values, nodeIdGenerator);

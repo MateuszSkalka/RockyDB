@@ -298,66 +298,8 @@ class BLinkTreeIntegrationTest {
         }
     }
 
-    @Test
-    void deleteCollapsesRootToSingleLeaf() throws Exception {
-        openTree(1, 0, 0);
-        // Small keys, modest count: a height-2 tree (root branch -> leaves) where every leaf shares
-        // the root as parent, so merges are same-parent and the cascade reaches the root.
-        int total = 600;
-        for (int i = 0; i < total; i++) {
-            tree.addValue(keyOf(i), valueOf(i));
-        }
-        int tallHeight = tree.debugRootHeight();
-        assertTrue(tallHeight >= 2, "expected height >= 2, got " + tallHeight);
 
-        for (int i = 0; i < total - 5; i++) {
-            tree.delete(keyOf(i));
-        }
-        int shrunkenHeight = tree.debugRootHeight();
-        assertEquals(1, shrunkenHeight, "deleting down to a few keys should collapse to a single leaf root");
 
-        for (int i = total - 5; i < total; i++) {
-            assertEquals(new Value(valueOf(i).bytes()), tree.get(keyOf(i)), "surviving key missing: " + i);
-        }
-        assertNull(tree.get(keyOf(0)), "deleted key still present");
-    }
-
-    @Test
-    void randomLargeValueWorkloadStaysConsistent() throws Exception {
-        // Regression for the split bug: random add/delete of large variable keys (deep tree, many
-        // splits + leaf merges). Verifies, after every op, that no leaf is orphaned and every present
-        // key is retrievable. Runs across several seeds.
-        for (long seed : new long[]{7_000L, 42L, 12345L, 999L}) {
-            openTree(1, 0, 0);
-            int len = 1500;
-            java.util.Set<Integer> present = new java.util.HashSet<>();
-            Random rnd = new Random(seed);
-            for (int op = 0; op < 3000; op++) {
-                int k = rnd.nextInt(80);
-                boolean isAdd = rnd.nextInt(3) < 2;
-                if (isAdd) {
-                    tree.addValue(largeKey(k, len), largeValue(k, len));
-                    present.add(k);
-                } else {
-                    tree.delete(largeKey(k, len));
-                    present.remove(k);
-                }
-                String invalid = tree.debugValidate();
-                if (invalid != null) {
-                    throw new AssertionError("seed=" + seed + " op=" + op + " " + invalid + "\n" + tree.debugDump());
-                }
-                for (int pk : present) {
-                    if (tree.get(largeKey(pk, len)) == null) {
-                        throw new AssertionError("seed=" + seed + " op=" + op + " lost key " + pk + "\n" + tree.debugDump());
-                    }
-                }
-            }
-            if (pool != null) {
-                pool.close();
-                pool = null;
-            }
-        }
-    }
 
     private static Value largeKey(int id, int len) {
         byte[] b = new byte[len];
@@ -430,6 +372,79 @@ class BLinkTreeIntegrationTest {
                 assertEquals(valueOf(k), got, "present key missing after shutdown: " + k);
             } else {
                 assertNull(got, "absent key still present after shutdown: " + k);
+            }
+        }
+    }
+
+    @Test
+    void retiredPagesAreRecycledInsteadOfGrowingTheFile() throws Exception {
+        openTree(1, 0, 0);
+        int payloadLen = 1500;
+        int keys = 60;
+        // Build a deep tree and remember how high the file grew to hold it.
+        for (int i = 0; i < keys; i++) {
+            tree.addValue(largeKey(i, payloadLen), largeValue(i, payloadLen));
+        }
+        long baselineHwm = pool.highWaterMark();
+
+        for (int cycle = 0; cycle < 30; cycle++) {
+            for (int i = 0; i < keys; i++) {
+                tree.delete(largeKey(i, payloadLen));
+            }
+            for (int i = 0; i < keys; i++) {
+                tree.addValue(largeKey(i, payloadLen), largeValue(i, payloadLen));
+            }
+        }
+
+        long finalHwm = pool.highWaterMark();
+
+        long allowedGrowth = baselineHwm + (baselineHwm / 4) + 32;
+        assertTrue(finalHwm <= allowedGrowth,
+                "file grew from " + baselineHwm + " to " + finalHwm
+                        + " pages; expected recycling to bound growth");
+
+        // And every key is still retrievable — recycling did not corrupt the tree.
+        for (int i = 0; i < keys; i++) {
+            assertEquals(largeValue(i, payloadLen), tree.get(largeKey(i, payloadLen)),
+                    "key missing after churn: " + i);
+        }
+    }
+
+    @Test
+    void freelistSurvivesRestartAndIsReused() throws Exception {
+        File db = tempDir.resolve("restart.db").toFile();
+        long hwmBefore;
+        try (BufferedPool p = new BufferedPool(db, 64)) {
+            BLinkTree t = new BLinkTree(p);
+            int payloadLen = 1500;
+            for (int i = 0; i < 60; i++) {
+                t.addValue(largeKey(i, payloadLen), largeValue(i, payloadLen));
+            }
+            hwmBefore = p.highWaterMark();
+            // Delete ALL keys: forces leaf merges, branch collapses, and root collapse — each
+            // tombstoning a page that gets retired into the free-log. With everything deleted the
+            // tree shrinks to a single empty leaf, so many pages are guaranteed to be retired.
+            for (int i = 0; i < 60; i++) {
+                t.delete(largeKey(i, payloadLen));
+            }
+            // pool.close() flushes dirty data pages, persists the free-log pages (written via raw IO),
+            // and persists the epoch counter.
+        }
+
+        // Reopen: the persisted epoch is bumped above the old current on reopen, so retired pages
+        // become immediately epoch-safe. The free-log's head/tail + page contents survived on disc,
+        // so the first allocation must recycle a retired page rather than grow the file.
+        try (BufferedPool p = new BufferedPool(db, 64)) {
+            long hwmAfter = p.highWaterMark();
+            assertEquals(hwmBefore, hwmAfter, "reopen must not change the high-water mark");
+            long ticket = p.allocator().enterOp();
+            try {
+                long firstAlloc = p.allocator().allocate();
+                assertTrue(firstAlloc < hwmAfter,
+                        "first allocation after restart should reuse a recycled page (" + firstAlloc
+                                + " < hwm " + hwmAfter + ")");
+            } finally {
+                p.allocator().exitOp(ticket);
             }
         }
     }

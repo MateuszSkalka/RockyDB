@@ -7,7 +7,6 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.LongAdder;
-import java.util.function.Supplier;
 
 public class BufferedPool implements Store, Closeable {
 
@@ -148,8 +147,27 @@ public class BufferedPool implements Store, Closeable {
     }
 
     @Override
-    public Supplier<Long> nodeIdGenerator() {
-        return discStore.nodeIdGenerator();
+    public PageAllocator allocator() {
+        return discStore.allocator();
+    }
+
+    public long highWaterMark() {
+        return discStore.highWaterMark();
+    }
+
+    @Override
+    public long enterOp() {
+        return discStore.allocator().enterOp();
+    }
+
+    @Override
+    public void exitOp(long ticket) {
+        discStore.allocator().exitOp(ticket);
+    }
+
+    @Override
+    public void retire(long pageId) {
+        discStore.allocator().retire(pageId);
     }
 
     @Override

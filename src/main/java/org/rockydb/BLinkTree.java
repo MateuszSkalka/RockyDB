@@ -6,6 +6,7 @@ import org.rockydb.Node.CreationResult;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Deque;
+import java.util.function.Supplier;
 
 public class BLinkTree {
     private final Store store;
@@ -15,12 +16,25 @@ public class BLinkTree {
         this(store, new StoreBackedRootRef(store));
     }
 
-    public BLinkTree(Store store, RootRef rootRef) {
+    BLinkTree(Store store, RootRef rootRef) {
         this.store = store;
         this.rootRef = rootRef;
     }
 
+    private Supplier<Long> idSupplier() {
+        return store.allocator().idSupplier();
+    }
+
     public Value get(Value key) {
+        long ticket = store.enterOp();
+        try {
+            return getUnderEpoch(key);
+        } finally {
+            store.exitOp(ticket);
+        }
+    }
+
+    private Value getUnderEpoch(Value key) {
         long rootId = rootRef.get();
         Node node = store.readNode(rootId);
         while (node.nextNode(key) != -1) {
@@ -30,6 +44,15 @@ public class BLinkTree {
     }
 
     public void addValue(Value key, Value value) {
+        long ticket = store.enterOp();
+        try {
+            addValueUnderEpoch(key, value);
+        } finally {
+            store.exitOp(ticket);
+        }
+    }
+
+    private void addValueUnderEpoch(Value key, Value value) {
         Deque<Long> ancestors = new ArrayDeque<>();
         long currentId = rootRef.get();
         Node node = store.readNode(currentId);
@@ -53,7 +76,7 @@ public class BLinkTree {
             }
 
             boolean isRoot = rootRef.get() == leaf.id();
-            CreationResult result = leaf.copyWith(key, value, store.nodeIdGenerator());
+            CreationResult result = leaf.copyWith(key, value, idSupplier());
 
             while (result.promotedValue() != null) {
                 Node rightChild = store.writeNode(result.right());
@@ -72,10 +95,6 @@ public class BLinkTree {
                 } else {
                     parentId = descendToLevel(result.promotedValue(), leftChild.height() + 1);
                 }
-                // Locate the survivor's parent by survivor id (not by a separator key): the survivor's
-                // separator can be stale (a delete) or grown (a rightmost leaf that grew then split),
-                // so a key-based lookup could hit the wrong slot. findParent follows tombstone
-                // redirects and right-links and matches by id -- robust to both.
                 WriteHandle parent = latchLiveNode(parentId, result.oldFence());
                 try {
                     BranchNode branchParent = (BranchNode) parent.get();
@@ -83,7 +102,7 @@ public class BLinkTree {
                     isRoot = rootRef.get() == branchParent.id();
                     result = branchParent.copyWith(
                             result.oldFence(), result.promotedValue(),
-                            rightChild.id(), rightChild.biggestKey(), store.nodeIdGenerator());
+                            rightChild.id(), rightChild.biggestKey(), idSupplier());
                 } catch (RuntimeException e) {
                     parent.close();
                     throw e;
@@ -101,6 +120,15 @@ public class BLinkTree {
     }
 
     public void delete(Value key) {
+        long ticket = store.enterOp();
+        try {
+            deleteUnderEpoch(key);
+        } finally {
+            store.exitOp(ticket);
+        }
+    }
+
+    private void deleteUnderEpoch(Value key) {
         Deque<Long> ancestors = new ArrayDeque<>();
         long currentId = rootRef.get();
         Node node = store.readNode(currentId);
@@ -124,12 +152,10 @@ public class BLinkTree {
 
             LeafNode updated = leaf.without(key);
             if (updated == null) {
-                return; // key absent: nothing to remove or merge
+                return;
             }
             handle.set(updated);
 
-            // Cascade upward: at each level, if the node underflows, absorb its right sibling; that
-            // removes a separator from the parent, which may underflow in turn (leaf and internal).
             Node current = updated;
             while (current.link() != -1 && current.isUnderfilled()) {
                 Ascended ascended = tryAbsorbRight(handle, current, ancestors);
@@ -145,16 +171,6 @@ public class BLinkTree {
         collapseRootIfSingleChild();
     }
 
-    /**
-     * Absorb {@code current}'s right sibling into {@code current} (held via {@code handle}, underfilled).
-     * The survivor is {@code current}; the sibling becomes a tombstone redirecting to it. Then drops
-     * the sibling's separator from the parent and returns the updated parent (now latched) so the
-     * cascade can ascend one level. Returns {@code null} if no merge happens; on {@code null} the
-     * survivor latch stays held and is released by the caller.
-     * <p>
-     * Latch order: current -> right sibling -> parent (bottom-up, left-to-right), consistent with
-     * {@link #addValue} and deadlock-free.
-     */
     private Ascended tryAbsorbRight(WriteHandle handle, Node current, Deque<Long> ancestors) {
         long rightId = current.link();
 
@@ -162,12 +178,9 @@ public class BLinkTree {
         Node right = rightHandle.get();
         if (right.marked() || !current.canMergeWith(right)) {
             rightHandle.close();
-            return null; // already merged away, or combined would not fit
+            return null;
         }
 
-        // Require the survivor and the sibling to share a parent and sit adjacent in it BEFORE moving
-        // any data. Located by id (a separator value can be stale or grown); a cross-parent or
-        // non-adjacent merge is skipped -- underflow is harmless.
         if (ancestors.isEmpty()) {
             rightHandle.close();
             return null;
@@ -181,42 +194,35 @@ public class BLinkTree {
         if (rightIdx < 0 || curIdx < 0 || rightIdx != curIdx + 1) {
             parentHandle.close();
             rightHandle.close();
-            return null; // cross-parent, non-adjacent, or absent: skip
+            return null;
         }
 
         long rightNodeId = right.id();
         int rightHeight = right.height();
         boolean rightIsLeaf = right.isLeaf();
 
-        // half-merge: the held node absorbs its right sibling
         handle.set(current.mergeWithRight(right));
-        // tombstone the absorbed sibling: its link now redirects to the survivor
         rightHandle.set(rightIsLeaf
                 ? LeafNode.tombstone(rightNodeId, rightHeight, current.id())
                 : BranchNode.tombstone(rightNodeId, rightHeight, current.id()));
+        store.retire(rightNodeId);
         rightHandle.close();
 
-        // complete-merge: drop the absorbed sibling's separator from the (shared) parent and ascend
         BranchNode updatedParent = parent.removeDownlink(rightFence);
         if (updatedParent == null) {
             parentHandle.close();
-            return null; // removal would empty the parent: leave the tombstone to redirect
+            return null;
         }
         parentHandle.set(updatedParent);
         ancestors.pop();
-        handle.close(); // release survivor latch; the parent latch takes over as we ascend
+        handle.close();
         return new Ascended(parentHandle, updatedParent);
     }
 
-    /**
-     * Latches the branch at {@code startId} and follows tombstone redirects and right-links until it
-     * reaches the live branch covering {@code guideKey} (a fence value). With fence keys every
-     * separator is exact (+∞ for the rightmost), so the lookup is unambiguous.
-     */
     private WriteHandle latchLiveNode(Long startId, Value guideKey) {
         WriteHandle h = store.latchForWrite(startId);
         Node n = h.get();
-        while (n.marked() || ((BranchNode) n).shouldGoRight(guideKey)) {
+        while (n.marked() || n.shouldGoRight(guideKey)) {
             WriteHandle next = store.latchForWrite(n.link());
             h.close();
             h = next;
@@ -227,162 +233,40 @@ public class BLinkTree {
 
     private record Ascended(WriteHandle handle, Node node) {}
 
-    /**
-     * Height shrink: when the root is an internal node with a single child, promote the child to be
-     * the new root. The old root is turned into a tombstone redirecting to the child (so any in-flight
-     * descent/ascent that still holds the old root id follows the redirect), and {@code rootRef} is
-     * repointed at the child. Repeats until the root is a leaf or has more than one child.
-     * <p>
-     * Concurrency: the root is latched and {@code rootRef} is re-verified under that latch, so this
-     * serializes with {@link #createNewRoot} (which also runs under the root latch). Tombstoned roots
-     * are never reclaimed, so a stale reader that reaches one is always redirected correctly.
-     */
     private void collapseRootIfSingleChild() {
         while (true) {
             long rootId = rootRef.get();
             Node root = store.readNode(rootId);
             if (root.isLeaf() || root.marked()) {
-                return; // leaf root, or already collapsed: nothing to do
+                return;
             }
             BranchNode branch = (BranchNode) root;
             if (branch.getPointers().length != 1) {
-                return; // multi-child root: keep
+                return;
             }
-            long childId = branch.getPointers()[0];
 
             WriteHandle h = store.latchForWrite(rootId);
             try {
                 if (rootRef.get() != rootId) {
-                    continue; // a concurrent createNewRoot replaced the root; re-evaluate
+                    continue;
                 }
                 BranchNode rootAgain = (BranchNode) h.get();
                 if (rootAgain.marked() || rootAgain.getPointers().length != 1) {
-                    return; // concurrently collapsed, or no longer single-child
+                    return;
                 }
                 long child = rootAgain.getPointers()[0];
-                // old root becomes a tombstone redirecting to its child; rootRef moves to the child
                 h.set(BranchNode.tombstone(rootId, rootAgain.height(), child));
+                store.retire(rootId);
                 rootRef.set(child);
             } finally {
                 h.close();
             }
-            // the child is now the root; loop in case it is also a single-child branch
         }
-    }
-
-    /**
-     * Debug aid: returns null if the tree is structurally consistent, else a description of the first
-     * problem found. Currently checks that every live leaf reachable via the leaf link chain is also
-     * reachable via parent downlinks from the root (i.e. no orphaned live leaves).
-     */
-    String debugValidate() {
-        java.util.Set<Long> viaParents = new java.util.HashSet<>();
-        java.util.ArrayDeque<Long> stack = new java.util.ArrayDeque<>();
-        stack.push(rootRef.get());
-        while (!stack.isEmpty()) {
-            long id = stack.pop();
-            if (!viaParents.add(id)) {
-                continue;
-            }
-            Node n = store.readNode(id);
-            if (!n.isLeaf() && !n.marked()) {
-                for (long p : ((BranchNode) n).getPointers()) {
-                    stack.push(p);
-                }
-            }
-        }
-        // leftmost live leaf
-        long cur = rootRef.get();
-        while (true) {
-            Node n = store.readNode(cur);
-            if (n.isLeaf() || n.marked()) {
-                break;
-            }
-            cur = ((BranchNode) n).getPointers()[0];
-        }
-        // walk live leaves via link chain (survivors' links skip tombstones)
-        java.util.Set<Long> viaLinks = new java.util.HashSet<>();
-        long leaf = cur;
-        while (leaf != -1 && viaLinks.add(leaf)) {
-            Node ln = store.readNode(leaf);
-            leaf = ln.link();
-        }
-        java.util.Set<Long> orphaned = new java.util.HashSet<>(viaLinks);
-        orphaned.removeAll(viaParents);
-        if (!orphaned.isEmpty()) {
-            return "ORPHANED live leaves (in link chain, not reachable from root): " + orphaned;
-        }
-        return null;
-    }
-
-    /**
-     * Debug aid: returns the height of the current root (1 = single leaf). For testing height shrink.
-     */
-    int debugRootHeight() {
-        return store.readNode(rootRef.get()).height();
-    }
-
-    /**
-     * Debug aid: breadth-first dump of all nodes reachable from the root via child pointers and
-     * right-links (latch-free reads). Not for production use.
-     */
-    String debugDump() {
-        StringBuilder sb = new StringBuilder();
-        java.util.Set<Long> visited = new java.util.HashSet<>();
-        java.util.ArrayDeque<Long> queue = new java.util.ArrayDeque<>();
-        queue.push(rootRef.get());
-        while (!queue.isEmpty()) {
-            long id = queue.pop();
-            if (!visited.add(id)) {
-                continue;
-            }
-            Node n = store.readNode(id);
-            sb.append(id).append(": ").append(n.isLeaf() ? "L" : "B")
-                    .append(n.marked() ? "*" : "").append(" h=").append(n.height())
-                    .append(" link=").append(n.link());
-            if (n.isLeaf()) {
-                LeafNode l = (LeafNode) n;
-                sb.append(" keys=").append(leafKeyIds(l));
-            } else {
-                BranchNode b = (BranchNode) n;
-                sb.append(" keys=").append(branchKeyIds(b)).append(" ptrs=").append(java.util.Arrays.toString(b.getPointers()));
-                for (long p : b.getPointers()) {
-                    queue.push(p);
-                }
-            }
-            sb.append('\n');
-            if (n.link() != -1) {
-                queue.push(n.link());
-            }
-        }
-        return sb.toString();
-    }
-
-    private static String leafKeyIds(LeafNode l) {
-        StringBuilder sb = new StringBuilder("[");
-        Value[] keys = l.getKeys();
-        for (int i = 0; i < keys.length; i++) {
-            if (i > 0) sb.append(",");
-            byte[] b = keys[i].bytes();
-            sb.append(b[b.length - 1] & 0xff);
-        }
-        return sb.append("]").toString();
-    }
-
-    private static String branchKeyIds(BranchNode b) {
-        StringBuilder sb = new StringBuilder("[");
-        Value[] keys = b.getKeys();
-        for (int i = 0; i < keys.length; i++) {
-            if (i > 0) sb.append(",");
-            byte[] by = keys[i].bytes();
-            sb.append(by[by.length - 1] & 0xff);
-        }
-        return sb.append("]").toString();
     }
 
     private void createNewRoot(Node leftChild, Node rightChild, Value promotedValue) {
         Node newRoot = store.writeNode(new BranchNode(
-                        store.nodeIdGenerator().get(),
+                        idSupplier().get(),
                         leftChild.height() + 1,
                         new Value[]{promotedValue, rightChild.biggestKey()},
                         new long[]{leftChild.id(), rightChild.id()},

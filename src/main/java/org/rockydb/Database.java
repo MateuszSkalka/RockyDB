@@ -5,6 +5,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -19,7 +22,7 @@ public class Database implements Closeable {
 
     public Database(File dbFile, int numFrames) throws IOException {
         this.pool = new BufferedPool(dbFile, numFrames);
-        this.catalog = new BLinkTree(pool); // catalog root = page 0 (StoreBackedRootRef)
+        this.catalog = new BLinkTree(pool);
     }
 
     public void createTable(String name) {
@@ -29,7 +32,7 @@ public class Database implements Closeable {
             if (catalog.get(nameKey) != null) {
                 throw new IllegalStateException("Table already exists: " + name);
             }
-            long rootId = pool.nodeIdGenerator().get();
+            long rootId = pool.allocator().allocate();
             pool.writeNode(new LeafNode(rootId, 1, new Value[]{}, new Value[]{}, -1L, Value.infinity(), false));
             catalog.addValue(nameKey, encodeRootId(rootId));
             tables.put(name, new BLinkTree(pool, new TableRootRef(nameKey, rootId)));
@@ -42,13 +45,44 @@ public class Database implements Closeable {
         Value nameKey = nameKey(name);
         catalogLock.lock();
         try {
-            if (catalog.get(nameKey) == null) {
+            Value rootVal = catalog.get(nameKey);
+            if (rootVal == null) {
                 throw new IllegalStateException("No such table: " + name);
             }
+            long rootId = decodeRootId(rootVal);
             catalog.delete(nameKey);
             tables.remove(name);
+            reclaimTreePages(rootId);
         } finally {
             catalogLock.unlock();
+        }
+    }
+
+    private void reclaimTreePages(long rootId) {
+        Set<Long> visited = new HashSet<>();
+        ArrayDeque<Long> stack = new ArrayDeque<>();
+        stack.push(rootId);
+        long ticket = pool.enterOp();
+        try {
+            while (!stack.isEmpty()) {
+                long id = stack.pop();
+                if (!visited.add(id)) {
+                    continue;
+                }
+                Node n = pool.readNode(id);
+                if (!n.isLeaf() && !n.marked()) {
+                    for (long p : ((BranchNode) n).getPointers()) {
+                        stack.push(p);
+                    }
+                }
+
+                if (n.link() != -1) {
+                    stack.push(n.link());
+                }
+                pool.retire(id);
+            }
+        } finally {
+            pool.exitOp(ticket);
         }
     }
 
@@ -74,6 +108,10 @@ public class Database implements Closeable {
     long rootPageIdOf(String table) {
         Value v = catalog.get(nameKey(table));
         return v == null ? -1L : decodeRootId(v);
+    }
+
+    long highWaterMark() {
+        return pool.highWaterMark();
     }
 
     private BLinkTree resolve(String table) {

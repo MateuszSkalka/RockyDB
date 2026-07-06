@@ -3,7 +3,7 @@ package org.rockydb;
 import java.util.Arrays;
 import java.util.function.Supplier;
 
-public class BranchNode extends Node {
+public final class BranchNode extends Node {
     private final Value[] keys;
     private final long[] pointers;
 
@@ -32,7 +32,7 @@ public class BranchNode extends Node {
 
     @Override
     public long nextNode(Value key) {
-        if (marked()) return link(); // tombstone: link() holds the survivor id; redirect to it
+        if (marked()) return link();
         int idx = Arrays.binarySearch(keys, key);
         idx = idx < 0 ? -(idx + 1) : idx;
         if (idx == pointers.length && link() != -1) {
@@ -51,9 +51,6 @@ public class BranchNode extends Node {
 
     @Override
     public boolean shouldGoRight(Value key) {
-        // A marked branch is a tombstone: link() redirects to the survivor, so follow it regardless
-        // of the key. Mirrors LeafNode.shouldGoRight. (Marked branches are always empty, so this also
-        // keeps the keys[last] access below safe; live branches always have at least one separator.)
         if (marked()) return true;
         return keys[keys.length - 1].compareTo(key) < 0 && link() != -1;
     }
@@ -71,13 +68,6 @@ public class BranchNode extends Node {
         return pointers;
     }
 
-    /**
-     * Propagate a split of a child into this branch. The child's old fence {@code oldFence} (its
-     * separator before the split) is found by binary search; that slot's separator becomes
-     * {@code promotedValue}, and the new sibling {@code newChildId} (fence {@code newChildMax}) is
-     * inserted immediately to its right. With fence keys the separator is always exact (+∞ for the
-     * rightmost), so a key-based lookup is unambiguous.
-     */
     public CreationResult copyWith(Value oldFence, Value promotedValue, long newChildId, Value newChildMax, Supplier<Long> nodeIdGenerator) {
         int idx = Arrays.binarySearch(keys, oldFence);
         if (idx < 0) {
@@ -97,11 +87,6 @@ public class BranchNode extends Node {
         return splitIfNeeded(newKeys, newPointers, nodeIdGenerator);
     }
 
-    /**
-     * Returns a copy of this branch with the downlink for the child whose separator (fence) is
-     * {@code fence} removed, together with the separator to that child's left. Located by binary
-     * search. Returns {@code null} if not present, or if removal would empty the node.
-     */
     public BranchNode removeDownlink(Value fence) {
         int idx = Arrays.binarySearch(keys, fence);
         if (idx < 0 || pointers.length == 1) {
@@ -111,20 +96,12 @@ public class BranchNode extends Node {
         return new BranchNode(id(), height(), remove(keys, keyToRemove), remove(pointers, idx), link());
     }
 
-    /**
-     * True when this branch's serialized body falls below the merge threshold, making it a candidate
-     * for merging into its right sibling (during a delete cascade).
-     */
     @Override
     public boolean isUnderfilled() {
         int body = size(keys) + size(pointers) + Store.LINK_POINTER_SIZE;
         return needsMerge(body);
     }
 
-    /**
-     * True when this branch and {@code right} would fit together in a single node. {@code right} is
-     * assumed to be this branch's current right sibling.
-     */
     @Override
     public boolean canMergeWith(Node right) {
         BranchNode r = (BranchNode) right;
@@ -132,13 +109,6 @@ public class BranchNode extends Node {
         return !needsSplit(merged);
     }
 
-    /**
-     * Returns a new branch that absorbs {@code right}'s children into this branch. The merged branch
-     * keeps this branch's id (survivor) and takes {@code right}'s right link, so the sibling chain
-     * skips {@code right}. The old high-key of this branch (the separator between the two) is retained
-     * as the internal separator between this branch's last child and {@code right}'s first child.
-     * {@code right} must subsequently be replaced by a tombstone.
-     */
     @Override
     public Node mergeWithRight(Node right) {
         BranchNode r = (BranchNode) right;
@@ -147,10 +117,6 @@ public class BranchNode extends Node {
         return new BranchNode(id(), height(), mergedKeys, mergedPointers, r.link());
     }
 
-    /**
-     * A tombstone for a merged-away branch: empty, marked, link repurposed to redirect readers to
-     * {@code survivorId}.
-     */
     public static BranchNode tombstone(long id, int height, long survivorId) {
         return new BranchNode(id, height, new Value[0], new long[0], survivorId, true);
     }
