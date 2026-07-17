@@ -5,13 +5,6 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-/**
- * Node-level storage: turns the raw frames of a {@link BufferedPool} into {@link Node}s
- * via {@link PageCodec}, provides tree latching through {@link WriteHandle}, tracks the
- * tree root id, and recycles pages safely ({@link EpochManager} + {@link FreeLog}):
- * a retired page is re-allocated only once no in-flight operation can reference it.
- * Bootstraps an empty database file (root leaf + free-log page) on first open.
- */
 public class NodeStore implements Store, Closeable {
 
     private final DiscStore discStore;

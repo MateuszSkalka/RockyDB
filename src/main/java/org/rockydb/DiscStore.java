@@ -7,11 +7,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Dumb raw page IO: reads/writes page-sized blocks at page-id offsets and persists the
- * file header (tree root id, free-log head/tail, epoch). Knows nothing about nodes,
- * serialization, epochs or the free log.
- */
 public final class DiscStore implements AutoCloseable {
     private static final long TREE_ROOT_FILE_POSITION = 0;       // 8 bytes: data tree root id
     private static final long FREE_LOG_HEAD_FILE_POSITION = 8;   // 8 bytes: packed (headPageId, headSlot)

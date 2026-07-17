@@ -7,13 +7,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.LongAdder;
 
-/**
- * Raw page cache over a {@link DiscStore}: a fixed set of frames, clock-sweep eviction
- * and pin-based liveness. Deals in bytes only — it knows nothing about nodes or
- * serialization. Callers get a pinned {@link Frame} from {@link #acquire(long)} and
- * must {@link Frame#unpin()} it when done. Dirty pages are written back on eviction
- * and on {@link #close()}.
- */
 public class BufferedPool implements Closeable {
 
     private final DiscStore discStore;

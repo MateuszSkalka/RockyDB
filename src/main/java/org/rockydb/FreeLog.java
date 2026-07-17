@@ -5,27 +5,6 @@ import java.util.ArrayDeque;
 import java.util.Optional;
 import java.util.concurrent.locks.ReentrantLock;
 
-/**
- * FIFO queue of retired pages, buffered in memory to amortize disk IO.
- *
- * Disk layout is a chain of raw pages (per-page header: next ptr + count; (pageId, epoch)
- * records), head/tail packed as (pageId << 32) | slot in the file header. On top of that:
- *  - {@link #retire} appends to a write buffer, flushed to the tail of the chain only when
- *    full ({@link #BUFFER_CAPACITY} entries) or on {@link #flush()}.
- *  - {@link #acquireSafe} serves from a read buffer; when empty it refills by consuming up
- *    to BUFFER_CAPACITY records from the head of the chain — persisting the advanced head
- *    immediately, so an already-served page can never be resurrected and handed out twice
- *    after a crash — or, when the on-disk queue is empty, by transferring the write buffer.
- *
- * A page becomes re-allocatable only once its retire epoch is older than the safe epoch
- * (see {@link EpochManager}). Records are served FIFO and epochs are non-decreasing along
- * the queue, so checking the read buffer's head is enough.
- *
- * Crash semantics: unflushed retires and unserved read-buffer entries are lost — a bounded
- * free-space leak (≤ 2 × BUFFER_CAPACITY pages), never corruption. Accepted: there is no WAL.
- *
- * Concurrency: one lock; hot paths are plain memory ops, disk IO happens once per batch.
- */
 final class FreeLog {
     static final int HEADER_BYTES = Long.BYTES + Integer.BYTES;
     static final int RECORD_BYTES = Long.BYTES + Long.BYTES;
@@ -97,8 +76,6 @@ final class FreeLog {
         }
     }
 
-    /** Persists pending retires. Called on shutdown; entries already consumed into the read
-     *  buffer but not yet served are dropped (bounded, accepted leak — see class doc). */
     void flush() {
         lock.lock();
         try {
@@ -175,13 +152,9 @@ final class FreeLog {
             }
         }
         if (consumed) {
-            // persist the advanced head NOW: everything in the read buffer is consumed as far
-            // as disk is concerned, so a crash can leak but never double-allocate these pages
             disc.writeFreeLogBootstrap(headPacked(), tailPacked());
         }
         if (readBuffer.isEmpty() && queueEmpty()) {
-            // nothing persisted: serve directly from pending retires (order is preserved —
-            // write buffer entries are newer than anything already consumed)
             readBuffer.addAll(writeBuffer);
             writeBuffer.clear();
         }

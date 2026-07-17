@@ -14,10 +14,8 @@ public interface Store {
     void updateRootId(long id);
     long rootId();
 
-    /** Returns a page id safe to reuse (epoch-checked), or a fresh one. */
     long allocate();
 
-    /** Retires a page; it becomes re-allocatable once no in-flight op can reference it. */
     void retire(long pageId);
 
     long enterOp();
