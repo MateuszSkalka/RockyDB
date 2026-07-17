@@ -12,13 +12,10 @@ import static org.mockito.Mockito.*;
 
 class BLinkTreeTest {
 
-    /** Stub {@code allocator()} on a mock Store so both {@code allocate()} and {@code idSupplier()}
-     *  draw from the same id sequence, mirroring the real allocator. */
+    /** Stub {@code allocate()} on a mock Store to draw from a deterministic id sequence,
+     *  mirroring the real allocator. */
     private static void stubAllocator(Store mock, Supplier<Long> ids) {
-        PageAllocator allocator = mock(PageAllocator.class);
-        when(allocator.allocate()).thenAnswer(inv -> ids.get());
-        when(allocator.idSupplier()).thenReturn(ids);
-        when(mock.allocator()).thenReturn(allocator);
+        when(mock.allocate()).thenAnswer(inv -> ids.get());
     }
 
     private static Value v(String s) {

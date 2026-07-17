@@ -57,15 +57,13 @@ class FreeLogTest {
     void emptyLogAcquiresNothing() throws Exception {
         openStore();
         assertTrue(freeLog.acquireSafe(100L).isEmpty());
-        assertFalse(freeLog.hasSafe(100L));
     }
 
     @Test
     void headUnsafeReturnsEmpty() throws Exception {
         openStore();
         freeLog.retire(42L, 5L);
-        assertFalse(freeLog.hasSafe(5L)); // 5 < 5 false
-        assertTrue(freeLog.acquireSafe(5L).isEmpty());
+        assertTrue(freeLog.acquireSafe(5L).isEmpty()); // 5 < 5 false
         // safe once safeEpoch exceeds the retire epoch
         assertEquals(Optional.of(42L), freeLog.acquireSafe(6L));
     }

@@ -2,17 +2,17 @@ package org.rockydb;
 
 import java.nio.ByteBuffer;
 
-import static org.rockydb.ByteUtils.readIsLeafFlag;
-import static org.rockydb.ByteUtils.readMarkedFlag;
-
 public final class PageCodec {
+
+    private static final byte IS_LEAF = 1;
+    private static final byte MARKED = 2;
 
     private PageCodec() {}
 
     public static Node deserialize(long id, ByteBuffer buffer) {
         byte flags = buffer.get();
-        boolean isLeaf = readIsLeafFlag(flags);
-        boolean marked = readMarkedFlag(flags);
+        boolean isLeaf = (flags & IS_LEAF) != 0;
+        boolean marked = (flags & MARKED) != 0;
         int elemCount = buffer.getShort();
         int height = buffer.getShort();
 
@@ -24,7 +24,13 @@ public final class PageCodec {
     }
 
     public static ByteBuffer serialize(Node node) {
-        byte flags = ByteUtils.createFlags(node.isLeaf(), node.marked());
+        byte flags = 0;
+        if (node.isLeaf()) {
+            flags |= IS_LEAF;
+        }
+        if (node.marked()) {
+            flags |= MARKED;
+        }
         if (node instanceof BranchNode branchNode) {
             return createBuffer(flags, node.height(), branchNode.getKeys(), branchNode.getPointers(), branchNode.link());
         } else if (node instanceof LeafNode leafNode) {

@@ -8,8 +8,8 @@ import java.nio.ByteBuffer;
 /**
  * Node-level storage: turns the raw frames of a {@link BufferedPool} into {@link Node}s
  * via {@link PageCodec}, provides tree latching through {@link WriteHandle}, tracks the
- * tree root id, and owns the epoch-based page recycling stack
- * ({@link EpochManager} + {@link FreeLog} + {@link PageAllocator}).
+ * tree root id, and recycles pages safely ({@link EpochManager} + {@link FreeLog}):
+ * a retired page is re-allocated only once no in-flight operation can reference it.
  * Bootstraps an empty database file (root leaf + free-log page) on first open.
  */
 public class NodeStore implements Store, Closeable {
@@ -17,7 +17,7 @@ public class NodeStore implements Store, Closeable {
     private final DiscStore discStore;
     private final BufferedPool pool;
     private final EpochManager epochs;
-    private final PageAllocator allocator;
+    private final FreeLog freeLog;
 
     public NodeStore(File dbFile, int numFrames) throws IOException {
         this.discStore = new DiscStore(dbFile);
@@ -26,9 +26,8 @@ public class NodeStore implements Store, Closeable {
             bootstrap();
         }
         this.epochs = new EpochManager(discStore.loadEpoch() + 1);
-        FreeLog freeLog = new FreeLog(
+        this.freeLog = new FreeLog(
                 discStore, epochs, discStore.freeLogHeadPacked(), discStore.freeLogTailPacked());
-        this.allocator = new PageAllocator(epochs, freeLog, discStore::allocateRaw);
     }
 
     private void bootstrap() {
@@ -77,8 +76,14 @@ public class NodeStore implements Store, Closeable {
     }
 
     @Override
-    public PageAllocator allocator() {
-        return allocator;
+    public long allocate() {
+        return freeLog.acquireSafe(epochs.safeEpoch()).orElseGet(discStore::allocateRaw);
+    }
+
+    @Override
+    public void retire(long pageId) {
+        freeLog.retire(pageId, epochs.current());
+        epochs.advance();
     }
 
     @Override
@@ -89,11 +94,6 @@ public class NodeStore implements Store, Closeable {
     @Override
     public void exitOp(long ticket) {
         epochs.exit(ticket);
-    }
-
-    @Override
-    public void retire(long pageId) {
-        allocator.retire(pageId);
     }
 
     @Override

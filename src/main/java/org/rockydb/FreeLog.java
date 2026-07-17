@@ -82,15 +82,6 @@ public final class FreeLog {
         }
     }
 
-    boolean hasSafe(long safeEpoch) {
-        lock.lock();
-        try {
-            return hasSafeLocked(safeEpoch);
-        } finally {
-            lock.unlock();
-        }
-    }
-
     private boolean hasSafeLocked(long safeEpoch) {
         if (headPageId == tailPageId && headSlot >= tailCount) {
             return false;

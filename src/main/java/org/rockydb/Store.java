@@ -9,20 +9,18 @@ public interface Store {
     double MERGE_THRESHOLD = 0.30;
 
     Node readNode(long id);
-
     Node writeNode(Node node);
-
     WriteHandle latchForWrite(long id);
-
     void updateRootId(long id);
-
     long rootId();
 
-    PageAllocator allocator();
+    /** Returns a page id safe to reuse (epoch-checked), or a fresh one. */
+    long allocate();
+
+    /** Retires a page; it becomes re-allocatable once no in-flight op can reference it. */
+    void retire(long pageId);
 
     long enterOp();
 
     void exitOp(long ticket);
-
-    void retire(long pageId);
 }

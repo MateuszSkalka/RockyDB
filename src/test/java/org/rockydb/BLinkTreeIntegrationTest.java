@@ -439,7 +439,7 @@ class BLinkTreeIntegrationTest {
             assertEquals(hwmBefore, hwmAfter, "reopen must not change the high-water mark");
             long ticket = p.enterOp();
             try {
-                long firstAlloc = p.allocator().allocate();
+                long firstAlloc = p.allocate();
                 assertTrue(firstAlloc < hwmAfter,
                         "first allocation after restart should reuse a recycled page (" + firstAlloc
                                 + " < hwm " + hwmAfter + ")");

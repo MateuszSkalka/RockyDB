@@ -32,7 +32,7 @@ public class Database implements Closeable {
             if (catalog.get(nameKey) != null) {
                 throw new IllegalStateException("Table already exists: " + name);
             }
-            long rootId = store.allocator().allocate();
+            long rootId = store.allocate();
             store.writeNode(new LeafNode(rootId, 1, new Value[]{}, new Value[]{}, -1L, Value.infinity(), false));
             catalog.addValue(nameKey, encodeRootId(rootId));
             tables.put(name, new BLinkTree(store, new TableRootRef(nameKey, rootId)));

@@ -22,16 +22,16 @@ Build/test: `./gradlew build`, `./gradlew test`. Tests: JUnit 6 + Mockito, one t
   standalone/catalog tree, catalog entry for tables).
 - `NodeStore implements Store` — node-level storage: `PageCodec` ser/de, tree latching
   (`latchForWrite`/`WriteHandle`), tree root id, bootstrap of a fresh file (root leaf +
-  free-log page), and ownership of the recycling stack (`EpochManager` + `FreeLog` +
-  `PageAllocator`). Composed of a `DiscStore` and a `BufferedPool`.
+  free-log page), and safe page recycling (`EpochManager` + `FreeLog`). Composed of a
+  `DiscStore` and a `BufferedPool`.
 - `BufferedPool` — raw byte page cache over `DiscStore`: fixed `Frame[]`, `pageToFrame`
   ConcurrentHashMap, `Clock` eviction. Whole API is `Frame acquire(long id)` + stats +
   flush-on-close; knows nothing about nodes.
 - `DiscStore` — deliberately dumb: `FileChannel` raw page i/o (page id = file offset /
   `PAGE_SIZE`), `allocateRaw`, and the file header (first 32 bytes): root id @0, FreeLog
   head @8, epoch @16, FreeLog tail @24. No knowledge of nodes, epochs or freelist semantics.
-- `PageAllocator` + `FreeLog` + `EpochManager` — safe page recycling, wired by `NodeStore`.
-- `PageCodec` / `ByteUtils` — node (de)serialization. `Node` / `LeafNode` / `BranchNode` —
+- `FreeLog` + `EpochManager` — safe page recycling, owned directly by `NodeStore`.
+- `PageCodec` — node (de)serialization, incl. the is-leaf/marked flag bits. `Node` / `LeafNode` / `BranchNode` —
   sealed hierarchy, immutable-style copy-on-write. `Value` — `byte[]` wrapper, unsigned
   lexicographic order; `Value.infinity()` (null bytes) is the +∞ fence sentinel.
 

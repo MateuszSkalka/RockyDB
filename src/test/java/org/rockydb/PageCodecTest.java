@@ -49,6 +49,26 @@ class PageCodecTest {
     }
 
     @Test
+    void tombstoneFlagsRoundTrip() {
+        LeafNode given = LeafNode.tombstone(9, 1, 5L);
+
+        Node result = roundTrip(9, given);
+
+        assertTrue(result.isLeaf());
+        assertTrue(result.marked());
+        assertEquals(5L, result.link());
+    }
+
+    @Test
+    void unmarkedBranchDoesNotSetMarkedFlag() {
+        BranchNode given = new BranchNode(3L, 2, new Value[]{v("a")}, new long[]{10}, -1L);
+
+        Node result = roundTrip(3, given);
+
+        assertFalse(result.marked());
+    }
+
+    @Test
     void serializeFillsEntirePageSize() {
         LeafNode given = new LeafNode(1, 1, new Value[]{v("a")}, new Value[]{v("1")}, -1L);
 
