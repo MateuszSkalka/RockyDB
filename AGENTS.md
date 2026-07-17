@@ -74,8 +74,10 @@ Three independent mechanisms:
    dirty frame writes it to disk. If all frames stay pinned through the sweeps,
    `BufferExhaustedException` is thrown.
 3. **Epochs (logical page reuse).** Every public op wraps its body in `enterOp()/exitOp(ticket)`
-   (ticket = current epoch). `EpochManager` tracks active ops per epoch; `safeEpoch()` = min
-   active epoch. `retire(pageId)` appends `(pageId, currentEpoch)` to the `FreeLog` and bumps
+   (ticket = current epoch). `EpochManager` tracks active op counts per epoch in a
+   `ConcurrentSkipListMap` — ops always enter at the current epoch, which never goes
+   backwards, so the minimum sits at the head and `safeEpoch()` is a `firstEntry()` lookup
+   (a transient zero-count head is conservative, never unsafe). `retire(pageId)` appends `(pageId, currentEpoch)` to the `FreeLog` and bumps
    the epoch; `allocate()` pops the FIFO head only if `headEpoch < safeEpoch` — i.e. no active
    op can still hold a reference to the freed page. The epoch auto-advances every 1024 enters,
    and is persisted in the file header (+1 on open).

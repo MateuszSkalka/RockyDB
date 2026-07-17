@@ -1,13 +1,13 @@
 package org.rockydb;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class EpochManager {
     private static final long ADVANCE_EVERY = 1024;
     private final AtomicLong currentEpoch;
-    private final ConcurrentMap<Long, AtomicLong> active = new ConcurrentHashMap<>();
+    private final ConcurrentSkipListMap<Long, AtomicLong> active = new ConcurrentSkipListMap<>();
     private final AtomicLong enterCountSinceAdvance = new AtomicLong();
 
     public EpochManager(long initialEpoch) {
@@ -36,14 +36,8 @@ public final class EpochManager {
     }
 
     public long safeEpoch() {
-        long min = Long.MAX_VALUE;
-        for (long e : active.keySet()) {
-            AtomicLong c = active.get(e);
-            if (c != null && c.get() > 0 && e < min) {
-                min = e;
-            }
-        }
-        return min == Long.MAX_VALUE ? currentEpoch.get() : min;
+        Map.Entry<Long, AtomicLong> oldest = active.firstEntry();
+        return oldest == null ? currentEpoch.get() : oldest.getKey();
     }
 
     public long current() {
