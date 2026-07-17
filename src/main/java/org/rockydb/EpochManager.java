@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class EpochManager {
     private static final long ADVANCE_EVERY = 1024;
     private final AtomicLong currentEpoch;
-    private final ConcurrentSkipListMap<Long, AtomicLong> active = new ConcurrentSkipListMap<>();
+    private final ConcurrentSkipListMap<Long, Long> active = new ConcurrentSkipListMap<>();
     private final AtomicLong enterCountSinceAdvance = new AtomicLong();
 
     public EpochManager(long initialEpoch) {
@@ -17,7 +17,7 @@ public final class EpochManager {
 
     public long enter() {
         long e = currentEpoch.get();
-        active.computeIfAbsent(e, k -> new AtomicLong()).incrementAndGet();
+        active.merge(e, 1L, Long::sum);
         if (enterCountSinceAdvance.incrementAndGet() % ADVANCE_EVERY == 0) {
             currentEpoch.compareAndSet(e, e + 1);
         }
@@ -25,18 +25,11 @@ public final class EpochManager {
     }
 
     public void exit(long ticket) {
-        AtomicLong count = active.get(ticket);
-        if (count == null) {
-            return;
-        }
-        long after = count.decrementAndGet();
-        if (after == 0) {
-            active.remove(ticket, count);
-        }
+        active.computeIfPresent(ticket, (k, v) -> v == 1 ? null : v - 1);
     }
 
     public long safeEpoch() {
-        Map.Entry<Long, AtomicLong> oldest = active.firstEntry();
+        Map.Entry<Long, Long> oldest = active.firstEntry();
         return oldest == null ? currentEpoch.get() : oldest.getKey();
     }
 

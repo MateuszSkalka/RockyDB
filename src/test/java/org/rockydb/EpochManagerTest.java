@@ -2,6 +2,12 @@ package org.rockydb;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class EpochManagerTest {
@@ -58,5 +64,55 @@ class EpochManagerTest {
     void exitIsIdempotentAgainstUnknownTicket() {
         EpochManager m = new EpochManager(0);
         assertDoesNotThrow(() -> m.exit(999L)); // never entered
+    }
+
+    @Test
+    void entryReachingZeroIsRemovedButEpochCanBeReentered() {
+        EpochManager m = new EpochManager(3);
+        long t = m.enter();
+        m.exit(t);
+        assertEquals(m.current(), m.safeEpoch()); // entry is gone, not left at zero
+
+        long t2 = m.enter(); // currentEpoch never advanced, so this re-enters the same epoch
+        assertEquals(3L, m.safeEpoch()); // and it must be tracked again
+        m.exit(t2);
+        assertEquals(m.current(), m.safeEpoch());
+    }
+
+    @Test
+    void racingEnterAndExitNeverLosesAnActiveOp() throws Exception {
+        // Regression test for the exit-vs-enter race: exit decrements to 0 and removes the entry
+        // while a concurrent enter at the same epoch has already grabbed the counter. The op must
+        // stay visible, i.e. safeEpoch() may never pass a live op's ticket.
+        EpochManager m = new EpochManager(0);
+        int threads = 8, iterations = 20_000;
+        CyclicBarrier start = new CyclicBarrier(threads);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            for (int t = 0; t < threads; t++) {
+                pool.submit(() -> {
+                    try {
+                        start.await();
+                        for (int i = 0; i < iterations; i++) {
+                            long ticket = m.enter();
+                            assertTrue(m.safeEpoch() <= ticket,
+                                    "safeEpoch must never advance past a live op");
+                            m.exit(ticket);
+                        }
+                    } catch (Throwable e) {
+                        failure.compareAndSet(null, e);
+                    }
+                });
+            }
+            pool.shutdown();
+            assertTrue(pool.awaitTermination(60, TimeUnit.SECONDS), "threads did not finish");
+        } finally {
+            pool.shutdownNow();
+        }
+        if (failure.get() != null) {
+            fail(failure.get());
+        }
+        assertEquals(m.current(), m.safeEpoch()); // all entries exited, nothing leaked
     }
 }
