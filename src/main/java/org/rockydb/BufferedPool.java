@@ -1,14 +1,20 @@
 package org.rockydb;
 
 import java.io.Closeable;
-import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.LongAdder;
 
-public class BufferedPool implements Store, Closeable {
+/**
+ * Raw page cache over a {@link DiscStore}: a fixed set of frames, clock-sweep eviction
+ * and pin-based liveness. Deals in bytes only — it knows nothing about nodes or
+ * serialization. Callers get a pinned {@link Frame} from {@link #acquire(long)} and
+ * must {@link Frame#unpin()} it when done. Dirty pages are written back on eviction
+ * and on {@link #close()}.
+ */
+public class BufferedPool implements Closeable {
 
     private final DiscStore discStore;
     private final Frame[] frames;
@@ -21,11 +27,11 @@ public class BufferedPool implements Store, Closeable {
 
     private volatile boolean closed = false;
 
-    public BufferedPool(File dbFile, int numFrames) throws IOException {
+    public BufferedPool(DiscStore discStore, int numFrames) {
         if (numFrames <= 0) {
             throw new IllegalArgumentException("numFrames must be > 0");
         }
-        this.discStore = new DiscStore(dbFile);
+        this.discStore = discStore;
         this.frames = new Frame[numFrames];
         for (int i = 0; i < numFrames; i++) {
             this.frames[i] = new Frame(i);
@@ -33,159 +39,29 @@ public class BufferedPool implements Store, Closeable {
         this.clock = new Clock(this.frames);
     }
 
-    @Override
-    public Node readNode(long id) {
+    /**
+     * Returns a pinned frame holding page {@code id}, loading it from disk if necessary.
+     * The frame is guaranteed to keep holding that page until unpinned (a pinned frame
+     * can never be repurposed by the clock). Content access still needs the frame's
+     * {@code ioLock}.
+     */
+    public Frame acquire(long id) {
         ensureOpen();
-        while (true) {
-            Frame frame = acquirePinned(id);
-            Node result = null;
-            boolean matched = false;
-            frame.ioLock.readLock().lock();
-            try {
-                if (frame.pageId() == id) {
-                    frame.bumpUsage();
-                    hits.increment();
-                    result = PageCodec.deserialize(id, ByteBuffer.wrap(frame.bytes));
-                    matched = true;
-                }
-            } finally {
-                frame.ioLock.readLock().unlock();
-            }
-            frame.unpin();
-            if (matched) {
-                return result;
-            }
-        }
-    }
-
-    @Override
-    public Node writeNode(Node node) {
-        ensureOpen();
-        long id = node.id();
-        while (true) {
-            Frame frame = acquirePinned(id);
-            boolean matched = false;
-            frame.ioLock.writeLock().lock();
-            try {
-                if (frame.pageId() == id) {
-                    ByteBuffer serialized = PageCodec.serialize(node);
-                    System.arraycopy(serialized.array(), 0, frame.bytes, 0, Store.PAGE_SIZE);
-                    frame.setDirty(true);
-                    frame.bumpUsage();
-                    matched = true;
-                }
-            } finally {
-                frame.ioLock.writeLock().unlock();
-            }
-            frame.unpin();
-            if (matched) {
-                return node;
-            }
-        }
-    }
-
-    @Override
-    public WriteHandle latchForWrite(long id) {
-        ensureOpen();
-        while (true) {
-            Frame frame = acquirePinned(id);
-            frame.ioLock.readLock().lock();
-            boolean matches;
-            try {
-                matches = frame.pageId() == id;
-            } finally {
-                frame.ioLock.readLock().unlock();
-            }
-            if (matches) {
-                frame.treeLatch().lock(); // pin held → frame cannot be repurposed → identity stable
-                return new PinnedWriteHandle(frame);
-            }
-            frame.unpin(); // repurposed between lookup and pin; release and retry
-        }
-    }
-
-    private static final class PinnedWriteHandle implements WriteHandle {
-        private final Frame frame;
-        private volatile boolean closed = false;
-
-        PinnedWriteHandle(Frame frame) {
-            this.frame = frame;
-        }
-
-        @Override
-        public Node get() {
-            frame.ioLock.readLock().lock();
-            try {
-                return PageCodec.deserialize(frame.pageId(), ByteBuffer.wrap(frame.bytes));
-            } finally {
-                frame.ioLock.readLock().unlock();
-            }
-        }
-
-        @Override
-        public void set(Node node) {
-            frame.ioLock.writeLock().lock();
-            try {
-                ByteBuffer serialized = PageCodec.serialize(node);
-                System.arraycopy(serialized.array(), 0, frame.bytes, 0, Store.PAGE_SIZE);
-                frame.setDirty(true);
-                frame.bumpUsage();
-            } finally {
-                frame.ioLock.writeLock().unlock();
-            }
-        }
-
-        @Override
-        public void close() {
-            if (closed) {
-                return;
-            }
-            closed = true;
-            frame.treeLatch().unlock();
-            frame.unpin();
-        }
-    }
-
-    @Override
-    public PageAllocator allocator() {
-        return discStore.allocator();
-    }
-
-    public long highWaterMark() {
-        return discStore.highWaterMark();
-    }
-
-    @Override
-    public long enterOp() {
-        return discStore.allocator().enterOp();
-    }
-
-    @Override
-    public void exitOp(long ticket) {
-        discStore.allocator().exitOp(ticket);
-    }
-
-    @Override
-    public void retire(long pageId) {
-        discStore.allocator().retire(pageId);
-    }
-
-    @Override
-    public void updateRootId(long id) {
-        discStore.updateRootId(id);
-    }
-
-    @Override
-    public long rootId() {
-        return discStore.rootId();
-    }
-
-    private Frame acquirePinned(long id) {
         while (true) {
             Frame cached = pageToFrame.get(id);
             if (cached != null) {
                 cached.pin();
-                return cached;
+                cached.ioLock.readLock().lock();
+                try {
+                    if (cached.pageId() == id) {
+                        hits.increment();
+                        return cached;
+                    }
+                } finally {
+                    cached.ioLock.readLock().unlock();
+                }
+                cached.unpin(); // repurposed between lookup and pin; retry
+                continue;
             }
             Frame victim = clock.findVictim(); // exclusively claimed (pinCount == 1)
             if (installAndLoad(victim, id)) {
@@ -228,6 +104,7 @@ public class BufferedPool implements Store, Closeable {
         }
     }
 
+    /** Flushes all dirty frames to disk. Does not close the underlying {@link DiscStore}. */
     @Override
     public void close() throws IOException {
         closed = true;
@@ -242,15 +119,7 @@ public class BufferedPool implements Store, Closeable {
                 frame.ioLock.writeLock().unlock();
             }
         }
-        try {
-            discStore.close();
-        } catch (IOException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IOException("Failed to close underlying store", e);
-        }
     }
-
 
     public int getBufferHits() {
         return (int) hits.sum();

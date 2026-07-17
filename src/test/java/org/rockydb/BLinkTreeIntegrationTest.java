@@ -32,7 +32,7 @@ class BLinkTreeIntegrationTest {
     @TempDir
     Path tempDir;
 
-    private BufferedPool pool;
+    private NodeStore pool;
     private BLinkTree tree;
 
     static Stream<Arguments> parameters() {
@@ -45,7 +45,7 @@ class BLinkTreeIntegrationTest {
 
     private void openTree(int threads, int elementsPerThread, int insertsPerThread) throws IOException {
         File db = tempDir.resolve("it-" + threads + "-" + elementsPerThread + "-" + insertsPerThread + ".db").toFile();
-        pool = new BufferedPool(db, 1000);
+        pool = new NodeStore(db, 1000);
         tree = new BLinkTree(pool);
     }
 
@@ -414,7 +414,7 @@ class BLinkTreeIntegrationTest {
     void freelistSurvivesRestartAndIsReused() throws Exception {
         File db = tempDir.resolve("restart.db").toFile();
         long hwmBefore;
-        try (BufferedPool p = new BufferedPool(db, 64)) {
+        try (NodeStore p = new NodeStore(db, 64)) {
             BLinkTree t = new BLinkTree(p);
             int payloadLen = 1500;
             for (int i = 0; i < 60; i++) {
@@ -434,17 +434,17 @@ class BLinkTreeIntegrationTest {
         // Reopen: the persisted epoch is bumped above the old current on reopen, so retired pages
         // become immediately epoch-safe. The free-log's head/tail + page contents survived on disc,
         // so the first allocation must recycle a retired page rather than grow the file.
-        try (BufferedPool p = new BufferedPool(db, 64)) {
+        try (NodeStore p = new NodeStore(db, 64)) {
             long hwmAfter = p.highWaterMark();
             assertEquals(hwmBefore, hwmAfter, "reopen must not change the high-water mark");
-            long ticket = p.allocator().enterOp();
+            long ticket = p.enterOp();
             try {
                 long firstAlloc = p.allocator().allocate();
                 assertTrue(firstAlloc < hwmAfter,
                         "first allocation after restart should reuse a recycled page (" + firstAlloc
                                 + " < hwm " + hwmAfter + ")");
             } finally {
-                p.allocator().exitOp(ticket);
+                p.exitOp(ticket);
             }
         }
     }

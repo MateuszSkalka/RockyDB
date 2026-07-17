@@ -9,10 +9,9 @@ public final class PageAllocator {
     private final FreeLog freeLog;
     private final LongSupplier allocateRaw;
 
-    public PageAllocator(long persistedEpoch, FreeLog.FreeLogIO io, LongSupplier allocateRaw,
-                         long headPacked, long tailPacked) {
-        this.epochs = new EpochManager(persistedEpoch + 1);
-        this.freeLog = new FreeLog(io, headPacked, tailPacked);
+    public PageAllocator(EpochManager epochs, FreeLog freeLog, LongSupplier allocateRaw) {
+        this.epochs = epochs;
+        this.freeLog = freeLog;
         this.allocateRaw = allocateRaw;
     }
 
@@ -23,18 +22,6 @@ public final class PageAllocator {
     public void retire(long pageId) {
         freeLog.retire(pageId, epochs.current());
         epochs.advance();
-    }
-
-    public long enterOp() {
-        return epochs.enter();
-    }
-
-    public void exitOp(long ticket) {
-        epochs.exit(ticket);
-    }
-
-    long currentEpoch() {
-        return epochs.current();
     }
 
     public Supplier<Long> idSupplier() {

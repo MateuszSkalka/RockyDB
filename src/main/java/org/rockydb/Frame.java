@@ -6,7 +6,7 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-final class Frame {
+public final class Frame {
     static final int MAX_USAGE = 5;
     static final long FREE = -1L;
 

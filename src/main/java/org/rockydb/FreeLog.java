@@ -4,20 +4,20 @@ import java.nio.ByteBuffer;
 import java.util.Optional;
 import java.util.concurrent.locks.ReentrantLock;
 
-final class FreeLog {
+/**
+ * FIFO queue of retired pages persisted as a chain of raw disk pages. A page becomes
+ * re-allocatable only once its retire epoch is older than the safe epoch (see
+ * {@link EpochManager}), i.e. no in-flight operation can still reference it.
+ * Bypasses the buffer pool deliberately: IO is direct and immediate, and the log
+ * never competes with tree pages for frames.
+ */
+public final class FreeLog {
     static final int HEADER_BYTES = Long.BYTES + Integer.BYTES;
     static final int RECORD_BYTES = Long.BYTES + Long.BYTES;
     static final int CAPACITY = (Store.PAGE_SIZE - HEADER_BYTES) / RECORD_BYTES;
 
-    public interface FreeLogIO {
-        ByteBuffer readPage(long pageId);
-        void writePage(long pageId, ByteBuffer buffer);
-        void writeBootstrap(long headPacked, long tailPacked);
-        long allocateRaw();
-        long currentEpoch();
-    }
-
-    private final FreeLogIO io;
+    private final DiscStore disc;
+    private final EpochManager epochs;
     private final ReentrantLock lock = new ReentrantLock();
 
     private long headPageId;
@@ -25,8 +25,9 @@ final class FreeLog {
     private long tailPageId;
     private int tailCount;
 
-    FreeLog(FreeLogIO io, long headPacked, long tailPacked) {
-        this.io = io;
+    FreeLog(DiscStore disc, EpochManager epochs, long headPacked, long tailPacked) {
+        this.disc = disc;
+        this.epochs = epochs;
         this.headPageId = pageOf(headPacked);
         this.headSlot = slotOf(headPacked);
         this.tailPageId = pageOf(tailPacked);
@@ -54,15 +55,15 @@ final class FreeLog {
             if (tailCount == CAPACITY) {
                 growTail();
             }
-            ByteBuffer page = io.readPage(tailPageId);
+            ByteBuffer page = disc.readRawPage(tailPageId);
             page.position(HEADER_BYTES + tailCount * RECORD_BYTES);
             page.putLong(pageId);
             page.putLong(freeEpoch);
             tailCount++;
             page.putLong(0, page.getLong(0));
             page.putInt(Long.BYTES, tailCount);
-            io.writePage(tailPageId, page);
-            io.writeBootstrap(headPacked(), tailPacked());
+            disc.writeRawPage(tailPageId, page);
+            disc.writeFreeLogBootstrap(headPacked(), tailPacked());
         } finally {
             lock.unlock();
         }
@@ -99,7 +100,7 @@ final class FreeLog {
         return epoch < safeEpoch;
     }
     private long consumeHead(long safeEpoch) {
-        ByteBuffer headPage = io.readPage(headPageId);
+        ByteBuffer headPage = disc.readRawPage(headPageId);
         long nextPgId = headPage.getLong(0);
         int count = headPage.getInt(Long.BYTES);
         if (headSlot >= count) {
@@ -116,18 +117,18 @@ final class FreeLog {
         boolean headDrainedWithSuccessor = (headSlot >= count) && (nextPgId != -1);
         boolean singlePageEmptied = (headPageId == tailPageId) && headSlot >= count;
         if (headDrainedWithSuccessor && !singlePageEmptied) {
-            appendToTailNoLock(headPageId, io.currentEpoch());
+            appendToTailNoLock(headPageId, epochs.current());
             headPageId = nextPgId;
             headSlot = 0;
         } else if (singlePageEmptied) {
             headSlot = 0;
             tailCount = 0;
-            ByteBuffer p = io.readPage(tailPageId);
+            ByteBuffer p = disc.readRawPage(tailPageId);
             p.putInt(Long.BYTES, 0);
             p.putLong(0, -1L);
-            io.writePage(tailPageId, p);
+            disc.writeRawPage(tailPageId, p);
         }
-        io.writeBootstrap(headPacked(), tailPacked());
+        disc.writeFreeLogBootstrap(headPacked(), tailPacked());
         return pageId;
     }
 
@@ -135,34 +136,31 @@ final class FreeLog {
         if (tailCount == CAPACITY) {
             growTail();
         }
-        ByteBuffer page = io.readPage(tailPageId);
+        ByteBuffer page = disc.readRawPage(tailPageId);
         page.position(HEADER_BYTES + tailCount * RECORD_BYTES);
         page.putLong(pageId);
         page.putLong(freeEpoch);
         tailCount++;
         page.putInt(Long.BYTES, tailCount);
-        io.writePage(tailPageId, page);
-        io.writeBootstrap(headPacked(), tailPacked());
+        disc.writeRawPage(tailPageId, page);
+        disc.writeFreeLogBootstrap(headPacked(), tailPacked());
     }
 
     private void growTail() {
-        long newTail = io.allocateRaw();
-        ByteBuffer oldTail = io.readPage(tailPageId);
+        long newTail = disc.allocateRaw();
+        ByteBuffer oldTail = disc.readRawPage(tailPageId);
         oldTail.putLong(0, newTail);
-        io.writePage(tailPageId, oldTail);
+        disc.writeRawPage(tailPageId, oldTail);
 
-        ByteBuffer fresh = ByteBuffer.wrap(new byte[Store.PAGE_SIZE]);
-        fresh.putLong(0, -1L);       // next = none
-        fresh.putInt(Long.BYTES, 0); // count = 0
-        io.writePage(newTail, fresh);
+        disc.writeRawPage(newTail, emptyPage());
 
         tailPageId = newTail;
         tailCount = 0;
-        io.writeBootstrap(headPacked(), tailPacked());
+        disc.writeFreeLogBootstrap(headPacked(), tailPacked());
     }
 
     private long readHeadEpoch() {
-        ByteBuffer headPage = io.readPage(headPageId);
+        ByteBuffer headPage = disc.readRawPage(headPageId);
         int count = headPage.getInt(Long.BYTES);
         if (headSlot >= count) {
             return Long.MAX_VALUE;

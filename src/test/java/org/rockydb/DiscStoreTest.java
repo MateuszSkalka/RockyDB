@@ -27,14 +27,9 @@ class DiscStoreTest {
     }
 
     @Test
-    void freshStoreInitializesAnEmptyRootLeaf() throws Exception {
+    void freshStoreHasNoRoot() throws Exception {
         try (DiscStore given = openStore()) {
-            long rootId = given.rootId();
-
-            assertTrue(rootId >= 1);
-            Node root = PageCodec.deserialize(rootId, given.readRawPage(rootId));
-            assertTrue(root.isLeaf());
-            assertEquals(1, root.height());
+            assertEquals(-1, given.rootId());
         }
     }
 
@@ -56,11 +51,11 @@ class DiscStoreTest {
     }
 
     @Test
-    void allocatorProducesMonotonicallyIncreasingIds() throws Exception {
+    void allocateRawProducesMonotonicallyIncreasingIds() throws Exception {
         try (DiscStore given = openStore()) {
-            long first = given.allocator().allocate();
-            long second = given.allocator().allocate();
-            long third = given.allocator().allocate();
+            long first = given.allocateRaw();
+            long second = given.allocateRaw();
+            long third = given.allocateRaw();
 
             assertTrue(first >= 1);
             assertEquals(first + 1, second);
@@ -80,12 +75,36 @@ class DiscStoreTest {
     @Test
     void reopeningPersistsRootId() throws Exception {
         DiscStore first = openStore();
-        long allocated = first.allocator().allocate();
+        long allocated = first.allocateRaw();
         first.updateRootId(allocated);
         first.close();
 
         try (DiscStore reopened = new DiscStore(dbFile)) {
             assertEquals(allocated, reopened.rootId());
+        }
+    }
+
+    @Test
+    void freeLogBootstrapRoundTrip() throws Exception {
+        DiscStore first = openStore();
+        first.writeFreeLogBootstrap(FreeLog.pack(11L, 3), FreeLog.pack(22L, 7));
+        first.close();
+
+        try (DiscStore reopened = new DiscStore(dbFile)) {
+            assertEquals(FreeLog.pack(11L, 3), reopened.freeLogHeadPacked());
+            assertEquals(FreeLog.pack(22L, 7), reopened.freeLogTailPacked());
+        }
+    }
+
+    @Test
+    void epochRoundTrip() throws Exception {
+        DiscStore first = openStore();
+        assertEquals(0, first.loadEpoch());
+        first.writeEpoch(123L);
+        first.close();
+
+        try (DiscStore reopened = new DiscStore(dbFile)) {
+            assertEquals(123L, reopened.loadEpoch());
         }
     }
 }

@@ -15,14 +15,14 @@ import java.util.concurrent.locks.ReentrantLock;
 
 public class Database implements Closeable {
 
-    private final BufferedPool pool;
+    private final NodeStore store;
     private final BLinkTree catalog;
     private final ConcurrentMap<String, BLinkTree> tables = new ConcurrentHashMap<>();
     private final ReentrantLock catalogLock = new ReentrantLock();
 
     public Database(File dbFile, int numFrames) throws IOException {
-        this.pool = new BufferedPool(dbFile, numFrames);
-        this.catalog = new BLinkTree(pool);
+        this.store = new NodeStore(dbFile, numFrames);
+        this.catalog = new BLinkTree(store);
     }
 
     public void createTable(String name) {
@@ -32,10 +32,10 @@ public class Database implements Closeable {
             if (catalog.get(nameKey) != null) {
                 throw new IllegalStateException("Table already exists: " + name);
             }
-            long rootId = pool.allocator().allocate();
-            pool.writeNode(new LeafNode(rootId, 1, new Value[]{}, new Value[]{}, -1L, Value.infinity(), false));
+            long rootId = store.allocator().allocate();
+            store.writeNode(new LeafNode(rootId, 1, new Value[]{}, new Value[]{}, -1L, Value.infinity(), false));
             catalog.addValue(nameKey, encodeRootId(rootId));
-            tables.put(name, new BLinkTree(pool, new TableRootRef(nameKey, rootId)));
+            tables.put(name, new BLinkTree(store, new TableRootRef(nameKey, rootId)));
         } finally {
             catalogLock.unlock();
         }
@@ -62,14 +62,14 @@ public class Database implements Closeable {
         Set<Long> visited = new HashSet<>();
         ArrayDeque<Long> stack = new ArrayDeque<>();
         stack.push(rootId);
-        long ticket = pool.enterOp();
+        long ticket = store.enterOp();
         try {
             while (!stack.isEmpty()) {
                 long id = stack.pop();
                 if (!visited.add(id)) {
                     continue;
                 }
-                Node n = pool.readNode(id);
+                Node n = store.readNode(id);
                 if (!n.isLeaf() && !n.marked()) {
                     for (long p : ((BranchNode) n).getPointers()) {
                         stack.push(p);
@@ -79,10 +79,10 @@ public class Database implements Closeable {
                 if (n.link() != -1) {
                     stack.push(n.link());
                 }
-                pool.retire(id);
+                store.retire(id);
             }
         } finally {
-            pool.exitOp(ticket);
+            store.exitOp(ticket);
         }
     }
 
@@ -111,7 +111,7 @@ public class Database implements Closeable {
     }
 
     long highWaterMark() {
-        return pool.highWaterMark();
+        return store.highWaterMark();
     }
 
     private BLinkTree resolve(String table) {
@@ -130,7 +130,7 @@ public class Database implements Closeable {
             if (rootVal == null) {
                 throw new IllegalStateException("No such table: " + table);
             }
-            BLinkTree tree = new BLinkTree(pool, new TableRootRef(nameKey, decodeRootId(rootVal)));
+            BLinkTree tree = new BLinkTree(store, new TableRootRef(nameKey, decodeRootId(rootVal)));
             tables.put(table, tree);
             return tree;
         } finally {
@@ -140,7 +140,7 @@ public class Database implements Closeable {
 
     @Override
     public void close() throws IOException {
-        pool.close();
+        store.close();
     }
 
     private static Value nameKey(String name) {

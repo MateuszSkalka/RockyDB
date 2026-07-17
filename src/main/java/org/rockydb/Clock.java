@@ -3,7 +3,7 @@ package org.rockydb;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 
-final class Clock {
+public final class Clock {
     private static final int PROBES_BEFORE_BACKOFF = 64;
 
     private static final int MAX_SWEEPS = Frame.MAX_USAGE;

@@ -6,28 +6,21 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.nio.ByteBuffer;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class BufferedPoolTest {
 
     private File dbFile;
+    private DiscStore disc;
     private BufferedPool pool;
-
-    private static Value v(String s) {
-        return new Value(s.getBytes());
-    }
 
     @BeforeEach
     void setUp() throws IOException {
         dbFile = File.createTempFile("rockydb-pool-", ".db");
         dbFile.deleteOnExit();
+        disc = new DiscStore(dbFile);
     }
 
     @AfterEach
@@ -36,44 +29,49 @@ class BufferedPoolTest {
             pool.close();
             pool = null;
         }
+        if (disc != null) {
+            disc.close();
+            disc = null;
+        }
         if (dbFile != null && dbFile.exists()) {
             dbFile.delete();
         }
     }
 
-    @Test
-    void readNodeReturnsInitializedRootLeaf() throws Exception {
-        pool = new BufferedPool(dbFile, 16);
-        long rootId = pool.rootId();
-
-        Node root = pool.readNode(rootId);
-
-        assertTrue(root.isLeaf());
-        assertEquals(rootId, root.id());
+    private static void writeMarker(Frame frame, byte marker) {
+        frame.ioLock.writeLock().lock();
+        try {
+            frame.bytes[0] = marker;
+            frame.setDirty(true);
+        } finally {
+            frame.ioLock.writeLock().unlock();
+        }
     }
 
     @Test
-    void writeNodeThenReadNodeRoundTripsWithinCache() throws Exception {
-        pool = new BufferedPool(dbFile, 16);
-        long rootId = pool.rootId();
-        Value[] keys = {v("a"), v("c")};
-        Value[] values = {v("1"), v("3")};
-        LeafNode written = new LeafNode(rootId, 1, keys, values, -1L);
+    void acquireLoadsPageFromDisc() {
+        pool = new BufferedPool(disc, 16);
+        ByteBuffer page = ByteBuffer.wrap(new byte[Store.PAGE_SIZE]);
+        page.put(0, (byte) 42);
+        disc.writeRawPage(5L, page);
 
-        pool.writeNode(written);
-
-        LeafNode read = (LeafNode) pool.readNode(rootId);
-        assertArrayEquals(keys, read.getKeys());
-        assertArrayEquals(values, read.getValues());
+        Frame frame = pool.acquire(5L);
+        frame.ioLock.readLock().lock();
+        try {
+            assertEquals(5L, frame.pageId());
+            assertEquals((byte) 42, frame.bytes[0]);
+        } finally {
+            frame.ioLock.readLock().unlock();
+            frame.unpin();
+        }
     }
 
     @Test
-    void repeatedReadsGenerateBufferHits() throws Exception {
-        pool = new BufferedPool(dbFile, 16);
-        long rootId = pool.rootId();
+    void repeatedAcquiresGenerateBufferHits() {
+        pool = new BufferedPool(disc, 16);
 
-        pool.readNode(rootId);
-        pool.readNode(rootId);
+        pool.acquire(5L).unpin();
+        pool.acquire(5L).unpin();
 
         assertTrue(pool.getBufferHits() >= 1);
         assertTrue(pool.getBufferMisses() >= 1);
@@ -82,212 +80,58 @@ class BufferedPoolTest {
     }
 
     @Test
-    void tracksUsedAndDirtyFrames() throws Exception {
-        pool = new BufferedPool(dbFile, 16);
-        long rootId = pool.rootId();
+    void tracksUsedAndDirtyFrames() {
+        pool = new BufferedPool(disc, 16);
 
         assertEquals(16, pool.getNumFrames());
         assertEquals(0, pool.getUsedFrames());
 
-        pool.readNode(rootId);
+        Frame frame = pool.acquire(5L);
         assertTrue(pool.getUsedFrames() >= 1);
         assertEquals(0, pool.getDirtyFrames());
 
-        pool.writeNode(new LeafNode(rootId, 1, new Value[]{v("a")}, new Value[]{v("1")}, -1L));
+        writeMarker(frame, (byte) 1);
+        frame.unpin();
         assertTrue(pool.getDirtyFrames() >= 1);
     }
 
     @Test
-    void latchForWriteGetSetAndCloseRoundTrip() throws Exception {
-        pool = new BufferedPool(dbFile, 16);
-        long rootId = pool.rootId();
-        Value[] keys = {v("a")};
-        Value[] values = {v("1")};
+    void throwsBufferExhaustedWhenPoolSaturatedByPins() {
+        pool = new BufferedPool(disc, 1);
 
-        try (WriteHandle handle = pool.latchForWrite(rootId)) {
-            Node before = handle.get();
-            assertTrue(before.isLeaf());
+        Frame held = pool.acquire(1L);
 
-            handle.set(new LeafNode(rootId, 1, keys, values, -1L));
+        assertThrows(BufferExhaustedException.class, () -> pool.acquire(2L));
 
-            LeafNode after = (LeafNode) handle.get();
-            assertArrayEquals(keys, after.getKeys());
-        }
-
-        LeafNode read = (LeafNode) pool.readNode(rootId);
-        assertArrayEquals(keys, read.getKeys());
+        held.unpin();
+        pool.acquire(2L).unpin(); // evictable again once unpinned
     }
 
     @Test
-    void handleCloseIsIdempotentAndReleasesLatch() throws Exception {
-        pool = new BufferedPool(dbFile, 16);
-        long rootId = pool.rootId();
+    void evictionWritesDirtyFrameToDisc() {
+        pool = new BufferedPool(disc, 1);
 
-        WriteHandle handle = pool.latchForWrite(rootId);
-        handle.close();
-        handle.close();
+        Frame frame = pool.acquire(1L);
+        writeMarker(frame, (byte) 77);
+        frame.unpin();
 
-        pool.latchForWrite(rootId).close();
+        pool.acquire(2L).unpin(); // forces eviction of page 1
+
+        assertEquals(1, pool.getEvictions());
+        assertEquals((byte) 77, disc.readRawPage(1L).get(0));
     }
 
     @Test
-    void evictsPagesAndReloadsThemCorrectly() throws Exception {
-        pool = new BufferedPool(dbFile, 8);
-        BLinkTree tree = new BLinkTree(pool);
-        byte[] bigValue = new byte[4000];
-        List<Value> keys = new ArrayList<>();
-        int count = 150;
+    void closeFlushesDirtyFramesToDisc() throws Exception {
+        pool = new BufferedPool(disc, 16);
 
-        for (int i = 0; i < count; i++) {
-            Value key = v("key" + i);
-            keys.add(key);
-            tree.addValue(key, new Value(bigValue));
-        }
+        Frame frame = pool.acquire(3L);
+        writeMarker(frame, (byte) 99);
+        frame.unpin();
 
-        assertTrue(pool.getEvictions() > 0);
-        for (int i = 0; i < count; i++) {
-            assertEquals(new Value(bigValue), tree.get(keys.get(i)), "wrong value for key " + i);
-        }
-    }
-
-    @Test
-    void closeFlushesDirtyPagesToDisk() throws IOException {
-        pool = new BufferedPool(dbFile, 16);
-        BLinkTree tree = new BLinkTree(pool);
-        tree.addValue(v("persistent"), v("yes"));
         pool.close();
         pool = null;
 
-        BufferedPool reopened = new BufferedPool(dbFile, 16);
-        try {
-            BLinkTree reopenedTree = new BLinkTree(reopened);
-            assertEquals(v("yes"), reopenedTree.get(v("persistent")));
-        } finally {
-            reopened.close();
-        }
-    }
-
-    @Test
-    void throwsBufferExhaustedWhenPoolSaturatedByPins() throws Exception {
-        pool = new BufferedPool(dbFile, 1);
-        long rootId = pool.rootId();
-
-        WriteHandle held = pool.latchForWrite(rootId);
-
-        assertThrows(BufferExhaustedException.class, () -> pool.readNode(rootId + 1));
-
-        held.close();
-    }
-
-    @Test
-    void deleteRemovesKey() throws Exception {
-        pool = new BufferedPool(dbFile, 16);
-        BLinkTree tree = new BLinkTree(pool);
-        tree.addValue(v("a"), v("1"));
-        tree.addValue(v("b"), v("2"));
-
-        tree.delete(v("a"));
-
-        assertNull(tree.get(v("a")));
-        assertEquals(v("2"), tree.get(v("b")));
-    }
-
-    @Test
-    void deleteAbsentKeyIsNoop() throws Exception {
-        pool = new BufferedPool(dbFile, 16);
-        BLinkTree tree = new BLinkTree(pool);
-        tree.addValue(v("a"), v("1"));
-
-        tree.delete(v("missing"));
-
-        assertEquals(v("1"), tree.get(v("a")));
-        assertNull(tree.get(v("missing")));
-    }
-
-    @Test
-    void deleteEmptiedLeafSelfHealsOnReinsert() throws Exception {
-        pool = new BufferedPool(dbFile, 16);
-        BLinkTree tree = new BLinkTree(pool);
-        tree.addValue(v("a"), v("1"));
-
-        tree.delete(v("a"));
-        assertNull(tree.get(v("a")));
-
-        tree.addValue(v("a"), v("2"));
-
-        assertEquals(v("2"), tree.get(v("a")));
-    }
-
-    @Test
-    void deleteAcrossSplitsLeavesRemainingKeysCorrect() throws Exception {
-        pool = new BufferedPool(dbFile, 64);
-        BLinkTree tree = new BLinkTree(pool);
-        Value bigValue = new Value(new byte[200]);
-        int count = 400;
-
-        for (int i = 0; i < count; i++) {
-            tree.addValue(v("key" + i), bigValue);
-        }
-
-        for (int i = 0; i < count; i += 2) {
-            tree.delete(v("key" + i));
-        }
-
-        for (int i = 0; i < count; i++) {
-            if (i % 2 == 0) {
-                assertNull(tree.get(v("key" + i)), "deleted key " + i + " still present");
-            } else {
-                assertEquals(bigValue, tree.get(v("key" + i)), "wrong value for key " + i);
-            }
-        }
-    }
-
-    @Test
-    void concurrentInsertsAndDeletesStayConsistent() throws Exception {
-        pool = new BufferedPool(dbFile, 128);
-        BLinkTree tree = new BLinkTree(pool);
-        Value bigValue = new Value(new byte[200]);
-        int keyCount = 500;
-        int threads = 8;
-
-        // Seed the even keys so deletes have a target even under contention.
-        for (int i = 0; i < keyCount; i += 2) {
-            tree.addValue(v("key" + i), bigValue);
-        }
-
-        ExecutorService exec = Executors.newFixedThreadPool(threads);
-        CountDownLatch start = new CountDownLatch(1);
-        try {
-            List<Future<?>> futures = new ArrayList<>();
-            for (int t = 0; t < threads; t++) {
-                final int offset = t;
-                futures.add(exec.submit(() -> {
-                    start.await();
-                    // Each key is owned by exactly one thread (i % threads == offset), so the
-                    // final state is deterministic: even keys end up deleted, odd keys inserted.
-                    for (int i = offset; i < keyCount; i += threads) {
-                        tree.addValue(v("key" + i), bigValue);
-                        if (i % 2 == 0) {
-                            tree.delete(v("key" + i));
-                        }
-                    }
-                    return null;
-                }));
-            }
-            start.countDown();
-            for (Future<?> f : futures) {
-                f.get();   // surface any worker exception
-            }
-        } finally {
-            exec.shutdown();
-        }
-
-        for (int i = 0; i < keyCount; i++) {
-            if (i % 2 == 0) {
-                assertNull(tree.get(v("key" + i)), "deleted key " + i + " still present");
-            } else {
-                assertEquals(bigValue, tree.get(v("key" + i)), "wrong value for key " + i);
-            }
-        }
+        assertEquals((byte) 99, disc.readRawPage(3L).get(0));
     }
 }
