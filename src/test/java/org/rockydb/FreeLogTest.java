@@ -156,16 +156,89 @@ class FreeLogTest {
     @Test
     void reopenReadsHeadAndTailFromBootstrap() throws Exception {
         openStore();
-        // Retire 3, consume 1 — head advances past record 1. Reopen should resume at record 2.
         retireWithAdvance(1L);
         retireWithAdvance(2L);
         retireWithAdvance(3L);
-        freeLog.acquireSafe(Long.MAX_VALUE); // consume record 1
+        freeLog.flush(); // retire is buffered; persist before reopen
 
         FreeLog reopened = new FreeLog(disc, epochs, disc.freeLogHeadPacked(), disc.freeLogTailPacked());
-        // Next two acquires are records 2 and 3 (the recycled head-page id, if any, sorts after by
-        // epoch — but with < CAPACITY records no recycle happens here).
+        assertEquals(Optional.of(1L), reopened.acquireSafe(Long.MAX_VALUE));
         assertEquals(Optional.of(2L), reopened.acquireSafe(Long.MAX_VALUE));
         assertEquals(Optional.of(3L), reopened.acquireSafe(Long.MAX_VALUE));
+    }
+
+    @Test
+    void midPageHeadPositionSurvivesReopen() throws Exception {
+        openStore();
+        for (int i = 0; i < FreeLog.BUFFER_CAPACITY + 10; i++) {
+            retireWithAdvance(1L + i);
+        }
+        freeLog.flush(); // 266 records on disk: a full 256-record batch + 10 more
+
+        // first refill consumes the 256-record batch on disk; the unserved ones stay in memory
+        assertEquals(Optional.of(1L), freeLog.acquireSafe(Long.MAX_VALUE));
+
+        // reopen: the head was persisted mid-page past the consumed batch; the 255 unserved
+        // entries leak (accepted), and the 10 records still on disk resume correctly
+        FreeLog reopened = new FreeLog(disc, epochs, disc.freeLogHeadPacked(), disc.freeLogTailPacked());
+        for (int i = 0; i < 10; i++) {
+            assertEquals(Optional.of(257L + i), reopened.acquireSafe(Long.MAX_VALUE));
+        }
+        assertTrue(reopened.acquireSafe(Long.MAX_VALUE).isEmpty());
+    }
+
+    @Test
+    void retiresAreBufferedUntilCapacityThenFlush() throws Exception {
+        openStore();
+        for (int i = 0; i < FreeLog.BUFFER_CAPACITY - 1; i++) {
+            retireWithAdvance(100L + i);
+        }
+        // nothing persisted yet — tail still shows zero records
+        assertEquals(0, disc.freeLogTailPacked() & 0xFFFFFFFFL);
+
+        retireWithAdvance(1000L); // 256th entry fills the buffer and triggers the flush
+
+        assertEquals(FreeLog.BUFFER_CAPACITY, disc.freeLogTailPacked() & 0xFFFFFFFFL);
+    }
+
+    @Test
+    void flushPersistsPendingRetires() throws Exception {
+        openStore();
+        retireWithAdvance(1L);
+        retireWithAdvance(2L);
+        freeLog.flush();
+
+        FreeLog reopened = new FreeLog(disc, epochs, disc.freeLogHeadPacked(), disc.freeLogTailPacked());
+        assertEquals(Optional.of(1L), reopened.acquireSafe(Long.MAX_VALUE));
+        assertEquals(Optional.of(2L), reopened.acquireSafe(Long.MAX_VALUE));
+    }
+
+    @Test
+    void refillConsumesEntriesOnDiskSoCrashCannotResurrectServedPages() throws Exception {
+        openStore();
+        retireWithAdvance(1L);
+        retireWithAdvance(2L);
+        retireWithAdvance(3L);
+        freeLog.flush();
+
+        // the refill batch-consumes all 3 records on disk, then serves the first from memory
+        assertEquals(Optional.of(1L), freeLog.acquireSafe(Long.MAX_VALUE));
+
+        // A "crash" here (reopen without close) loses the 2 unserved read-buffer entries —
+        // they leak — but the page already handed out can never be handed out twice.
+        FreeLog afterCrash = new FreeLog(disc, epochs, disc.freeLogHeadPacked(), disc.freeLogTailPacked());
+        assertTrue(afterCrash.acquireSafe(Long.MAX_VALUE).isEmpty());
+    }
+
+    @Test
+    void pendingRetiresAreServedFromWriteBufferWhenDiskIsEmpty() throws Exception {
+        openStore();
+        retireWithAdvance(7L);
+        retireWithAdvance(8L);
+
+        // never flushed to disk, still served in FIFO order
+        assertEquals(Optional.of(7L), freeLog.acquireSafe(Long.MAX_VALUE));
+        assertEquals(Optional.of(8L), freeLog.acquireSafe(Long.MAX_VALUE));
+        assertTrue(freeLog.acquireSafe(Long.MAX_VALUE).isEmpty());
     }
 }

@@ -83,8 +83,16 @@ Three independent mechanisms:
 `FreeLog` itself is a FIFO queue over chained disk pages (per-page header: next ptr + count;
 records of `(pageId, epoch)`), head/tail packed as `(pageId << 32) | slot` in the file header.
 A fully consumed head page is re-appended to the tail — the queue recycles its own pages.
-Serialized by one ReentrantLock; it does direct raw i/o through `DiscStore` (never the pool),
-so freelist writes are immediate and never compete with tree pages for frames.
+To amortize disk i/o it keeps two in-memory buffers (256 entries each): `retire` appends to a
+write buffer flushed to the tail only when full (or on `NodeStore.close()`); `acquireSafe`
+serves from a read buffer, refilled by batch-consuming up to 256 records from the head — the
+advanced head is persisted **immediately** at refill, so a crash can leak consumed-but-unserved
+pages but can never resurrect an already-allocated one (no double allocation). When the on-disk
+queue is empty, the write buffer is transferred to the read buffer (write-buffer entries are
+always the newest, so FIFO and epoch monotonicity hold; checking the read-buffer head suffices).
+Crash loss is bounded to ≤ 2 × 256 pages of leaked free space, never corruption. Serialized by
+one ReentrantLock; hot paths are plain memory ops, disk i/o happens once per batch. The log does
+raw i/o through `DiscStore` (never the pool), so it never competes with tree pages for frames.
 
 ## Operation flows
 

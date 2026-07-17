@@ -124,6 +124,7 @@ public class NodeStore implements Store, Closeable {
 
     @Override
     public void close() throws IOException {
+        freeLog.flush(); // persist pending retires before anything else can be lost
         pool.close(); // flush dirty frames first
         discStore.writeEpoch(epochs.current());
         discStore.close();
