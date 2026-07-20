@@ -108,11 +108,9 @@ class NodeStoreTest {
         }
 
         PageWrite w = store.latchForWrite(rootId);
-        LeafPage.put(w.bytes(), v("b").bytes(), v("2").bytes()); // shadow only, unpublished
+        LeafPage.put(w.bytes(), v("b").bytes(), v("2").bytes());
         ExecutorService exec = Executors.newSingleThreadExecutor();
         try {
-            // A reader on another thread must see the last published version immediately —
-            // with a write lock held for the latch window this would block until close().
             Future<Value[]> read = exec.submit(() -> {
                 try (PageRef ref = store.readPage(rootId)) {
                     return new Value[]{
@@ -264,7 +262,6 @@ class NodeStoreTest {
         int keyCount = 500;
         int threads = 8;
 
-        // Seed the even keys so deletes have a target even under contention.
         for (int i = 0; i < keyCount; i += 2) {
             tree.addValue(v("key" + i), bigValue);
         }
@@ -277,8 +274,7 @@ class NodeStoreTest {
                 final int offset = t;
                 futures.add(exec.submit(() -> {
                     start.await();
-                    // Each key is owned by exactly one thread (i % threads == offset), so the
-                    // final state is deterministic: even keys end up deleted, odd keys inserted.
+                    // each key is owned by exactly one thread, so the final state is deterministic
                     for (int i = offset; i < keyCount; i += threads) {
                         tree.addValue(v("key" + i), bigValue);
                         if (i % 2 == 0) {
@@ -290,7 +286,7 @@ class NodeStoreTest {
             }
             start.countDown();
             for (Future<?> f : futures) {
-                f.get();   // surface any worker exception
+                f.get();
             }
         } finally {
             exec.shutdown();

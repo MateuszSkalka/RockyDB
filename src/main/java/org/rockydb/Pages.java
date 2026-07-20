@@ -2,24 +2,6 @@ package org.rockydb;
 
 import java.util.Arrays;
 
-/**
- * Byte-level helpers and layout constants for slotted pages (PostgreSQL-style):
- * fixed header, slot array growing up, tuple region growing down. All tree logic
- * operates directly on the page byte array — no node materialization.
- *
- * <pre>
- * Header (21 bytes):
- *   [0]      flags      u8   bit0 is-leaf, bit1 marked
- *   [1..2]   count      u16  number of slots
- *   [3..4]   height     u16
- *   [5..12]  link       i64  right sibling page id, -1 = none
- *   [13..14] upper      u16  offset where the tuple region starts (grows downward)
- *   [15..16] deadBytes  u16  fragmented (reclaimable) bytes inside the tuple region
- *   [17..18] fenceOff   u16  leaves only: offset of the fence key bytes
- *   [19..20] fenceLen   u16  leaves only: 0xFFFF = +∞ sentinel
- * Slot i at 21 + i*4: keyOff u16 | keyLen u16
- * </pre>
- */
 final class Pages {
     private Pages() {}
 
@@ -36,12 +18,10 @@ final class Pages {
     static final int SLOT_SIZE = 4;
     static final int FLAG_LEAF = 1;
     static final int FLAG_MARKED = 2;
-    /** Branches only: the last slot's key is the +∞ sentinel (stored with keyLen 0). */
     static final int FLAG_INF_LAST = 4;
     static final int FENCE_INFINITE = 0xFFFF;
     static final long NO_LINK = -1L;
 
-    /** Usable bytes for slots + tuples + (leaf) fence. */
     static final int MAX_BODY = Store.PAGE_SIZE - HEADER_SIZE;
 
     static int u16(byte[] p, int off) {
@@ -74,8 +54,6 @@ final class Pages {
         putI32(p, off + 4, (int) v);
     }
 
-    // ---- header accessors ----
-
     static boolean isLeaf(byte[] p) {
         return (p[FLAGS] & FLAG_LEAF) != 0;
     }
@@ -104,7 +82,6 @@ final class Pages {
         putI64(p, LINK, link);
     }
 
-    /** End of the slot array = start of the contiguous free region. */
     static int lower(byte[] p) {
         return HEADER_SIZE + count(p) * SLOT_SIZE;
     }
@@ -117,7 +94,6 @@ final class Pages {
         return u16(p, DEAD_BYTES);
     }
 
-    /** Bytes genuinely in use (live tuples + slots, fence included for leaves). */
     static int liveBytes(byte[] p) {
         return (Store.PAGE_SIZE - u16(p, UPPER)) - deadBytes(p) + count(p) * SLOT_SIZE;
     }
@@ -125,8 +101,6 @@ final class Pages {
     static boolean needsMerge(byte[] p) {
         return liveBytes(p) < Store.MERGE_THRESHOLD * MAX_BODY;
     }
-
-    // ---- slot accessors ----
 
     static int slotPos(int idx) {
         return HEADER_SIZE + idx * SLOT_SIZE;
@@ -158,12 +132,6 @@ final class Pages {
         setCount(p, n - 1);
     }
 
-    // ---- comparisons ----
-
-    /**
-     * Compares the on-page key at {@code [off, off+len)} with {@code key}.
-     * {@code key == null} is the +∞ sentinel: every on-page key is smaller.
-     */
     static int compareRaw(byte[] p, int off, int len, byte[] key) {
         if (key == null) {
             return -1;
@@ -175,10 +143,6 @@ final class Pages {
         return compareRaw(p, keyOff(p, idx), keyLen(p, idx), key);
     }
 
-    /**
-     * Binary search over the slot array (lower-bound): index of the first key
-     * {@code >= target}, or {@code -(insertionPoint + 1)} when absent. Zero allocation.
-     */
     static int find(byte[] p, byte[] key) {
         int lo = 0;
         int hi = count(p) - 1;

@@ -28,7 +28,6 @@ class LeafPageTest {
         return out;
     }
 
-    /** Byte-accurate variant for fuzz values that are not valid UTF-8. */
     private static TreeMap<String, byte[]> entriesOfBytes(byte[] p) {
         TreeMap<String, byte[]> out = new TreeMap<>();
         for (int i = 0; i < Pages.count(p); i++) {
@@ -67,7 +66,7 @@ class LeafPageTest {
 
         assertEquals(new Value(b("222")), LeafPage.getValue(p, b("a")));
         assertEquals(1, Pages.count(p));
-        assertEquals(deadBefore, Pages.deadBytes(p)); // nothing fragmented
+        assertEquals(deadBefore, Pages.deadBytes(p));
     }
 
     @Test
@@ -106,12 +105,10 @@ class LeafPageTest {
             expected.put(k, v);
             i++;
         }
-        // page is now full; one more put of a fresh key must be rejected without damage
         byte[] bigValue = new byte[100];
         assertEquals(LeafPage.PutResult.SPLIT_NEEDED, LeafPage.put(p, b("zzzzz"), bigValue));
         assertEquals(expected, entriesOf(p));
 
-        // a grow-replace that cannot fit must also leave the page untouched
         assertEquals(LeafPage.PutResult.SPLIT_NEEDED, LeafPage.put(p, b("k00000"), bigValue));
         assertEquals(expected, entriesOf(p));
     }
@@ -133,7 +130,6 @@ class LeafPageTest {
         byte[] p = page();
         LeafPage.formatEmpty(p, 1, Pages.NO_LINK, null);
         TreeMap<String, String> expected = new TreeMap<>();
-        // fill, then delete every other entry to fragment, then refill — puts must compact
         int i = 0;
         while (LeafPage.put(p, b("k%05d".formatted(i)), b("v%05d".formatted(i))) != LeafPage.PutResult.SPLIT_NEEDED) {
             expected.put("k%05d".formatted(i), "v%05d".formatted(i));
@@ -157,19 +153,18 @@ class LeafPageTest {
     @Test
     void splitWithEntryBalancesAndEmbedsThePendingInsert() {
         byte[] left = page();
-        LeafPage.formatEmpty(left, 1, 77L, null); // link=77, fence +∞
+        LeafPage.formatEmpty(left, 1, 77L, null);
         int i = 0;
         while (LeafPage.put(left, b("k%05d".formatted(i)), b("v%05d".formatted(i))) != LeafPage.PutResult.SPLIT_NEEDED) {
             i++;
         }
         int fullCount = i;
-        byte[] oldFence = LeafPage.fenceBytes(left); // null (∞)
+        byte[] oldFence = LeafPage.fenceBytes(left);
 
         byte[] right = page();
-        byte[] pendingKey = b("k%05d".formatted(fullCount)); // the key that did not fit
+        byte[] pendingKey = b("k%05d".formatted(fullCount));
         byte[] promoted = LeafPage.splitWithEntry(left, right, 99L, oldFence, pendingKey, b("v-pending"));
 
-        // all entries present across the two halves, sorted, pending entry embedded
         TreeMap<String, String> all = entriesOf(left);
         all.putAll(entriesOf(right));
         assertEquals(fullCount + 1, all.size());
@@ -178,7 +173,6 @@ class LeafPageTest {
         }
         assertEquals("v-pending", all.get(new String(pendingKey, StandardCharsets.UTF_8)));
 
-        // promoted = left's biggest = left's fence; right inherits old fence (∞) and old link
         String leftBiggest = all.keySet().stream().filter(k -> entriesOf(left).containsKey(k))
                 .max(String::compareTo).orElseThrow();
         assertEquals(leftBiggest, new String(promoted, StandardCharsets.UTF_8));
@@ -189,10 +183,9 @@ class LeafPageTest {
         assertEquals(1, Pages.height(left));
         assertEquals(1, Pages.height(right));
 
-        // halves are roughly balanced and routing respects the new fence
         assertTrue(Math.abs(Pages.count(left) - Pages.count(right)) <= 1);
-        assertTrue(LeafPage.shouldGoRight(left, b("z"))); // past left fence → right
-        assertFalse(LeafPage.shouldGoRight(left, promoted)); // at fence → stays
+        assertTrue(LeafPage.shouldGoRight(left, b("z")));
+        assertFalse(LeafPage.shouldGoRight(left, promoted));
     }
 
     @Test
@@ -221,14 +214,14 @@ class LeafPageTest {
         LeafPage.setFence(p, b("m"));
         Pages.setLink(p, 42L);
 
-        assertFalse(LeafPage.shouldGoRight(p, b("a"))); // below fence
-        assertFalse(LeafPage.shouldGoRight(p, b("m"))); // at fence
-        assertTrue(LeafPage.shouldGoRight(p, b("z")));  // past fence
+        assertFalse(LeafPage.shouldGoRight(p, b("a")));
+        assertFalse(LeafPage.shouldGoRight(p, b("m")));
+        assertTrue(LeafPage.shouldGoRight(p, b("z")));
         assertEquals(42L, LeafPage.nextNode(p, b("z")));
         assertEquals(Pages.NO_LINK, LeafPage.nextNode(p, b("a")));
         assertArrayEquals(b("m"), LeafPage.fenceBytes(p));
 
-        LeafPage.setFence(p, null); // +∞
+        LeafPage.setFence(p, null);
         assertFalse(LeafPage.shouldGoRight(p, b("zzz")));
         assertNull(LeafPage.fenceBytes(p));
     }
@@ -293,7 +286,7 @@ class LeafPageTest {
                 rnd.nextBytes(v);
                 LeafPage.PutResult r = LeafPage.put(p, kb, v);
                 if (r == LeafPage.PutResult.SPLIT_NEEDED) {
-                    continue; // page full; model keeps old value
+                    continue;
                 }
                 expected.put(k, v);
             } else {
@@ -316,7 +309,6 @@ class LeafPageTest {
     @Test
     void fuzzSplitsAndMergesRoundTrip() {
         Random rnd = new Random(999);
-        // simulate a chain: fill → split with pending → both halves stay consistent
         for (int iter = 0; iter < 50; iter++) {
             byte[] left = page();
             LeafPage.formatEmpty(left, 1, Pages.NO_LINK, null);
@@ -338,7 +330,6 @@ class LeafPageTest {
                     for (Map.Entry<String, byte[]> e : expected.entrySet()) {
                         assertArrayEquals(e.getValue(), all.get(e.getKey()));
                     }
-                    // order across the fence: every left key < every right key
                     if (Pages.count(left) > 0 && Pages.count(right) > 0) {
                         String leftMax = new String(LeafPage.keyBytesAt(left, Pages.count(left) - 1), StandardCharsets.UTF_8);
                         String rightMin = new String(LeafPage.keyBytesAt(right, 0), StandardCharsets.UTF_8);

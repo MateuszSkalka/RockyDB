@@ -9,11 +9,11 @@ import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class DiscStore implements AutoCloseable {
-    private static final long TREE_ROOT_FILE_POSITION = 0;       // 8 bytes: data tree root id
-    private static final long FREE_LOG_HEAD_FILE_POSITION = 8;   // 8 bytes: packed (headPageId, headSlot)
-    private static final long EPOCH_FILE_POSITION = 16;          // 8 bytes: persisted epoch counter
-    private static final long FREE_LOG_TAIL_FILE_POSITION = 24;  // 8 bytes: packed (tailPageId, tailCount)
-    private static final long COUNT_FILE_POSITION = 32;          // 8 bytes: element count of the header-rooted tree
+    private static final long TREE_ROOT_FILE_POSITION = 0;
+    private static final long FREE_LOG_HEAD_FILE_POSITION = 8;
+    private static final long EPOCH_FILE_POSITION = 16;
+    private static final long FREE_LOG_TAIL_FILE_POSITION = 24;
+    private static final long COUNT_FILE_POSITION = 32;
 
     private final RandomAccessFile raf;
     private final FileChannel fileChannel;
@@ -71,16 +71,12 @@ public final class DiscStore implements AutoCloseable {
         return buffer;
     }
 
-    /** Reads the page straight into {@code dst} — no temp buffer, no copy. */
     void readRawPage(long id, byte[] dst) {
         ByteBuffer buffer = ByteBuffer.wrap(dst);
         readFully(id * Store.PAGE_SIZE, buffer);
     }
 
-    /**
-     * Positional reads are not guaranteed to fill the buffer in one call; loop.
-     * A short read at EOF (page never written) reads back as zeros.
-     */
+    // Positional reads may be short, so loop; an unwritten page past EOF must read back as zeros.
     private void readFully(long position, ByteBuffer buffer) {
         try {
             while (buffer.hasRemaining()) {

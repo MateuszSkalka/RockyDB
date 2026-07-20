@@ -103,7 +103,6 @@ public class Database implements Closeable {
         resolve(table).delete(key);
     }
 
-    /** Exact number of key/value pairs in the table. O(1), cached — no scan. */
     public long count(String table) {
         return resolve(table).count();
     }
@@ -150,8 +149,6 @@ public class Database implements Closeable {
 
     @Override
     public void close() throws IOException {
-        // Persist each open table's cached count next to its root id in the catalog.
-        // Runs before store.close() so the catalog pages flush with everything else.
         for (Map.Entry<String, BLinkTree> e : tables.entrySet()) {
             catalog.addValue(nameKey(e.getKey()), encodeMeta(rootPageIdOf(e.getKey()), e.getValue().count()));
         }
@@ -162,7 +159,6 @@ public class Database implements Closeable {
         return new Value(name.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** Catalog entry: 16 bytes = root page id + cached element count. */
     private static Value encodeMeta(long rootId, long count) {
         ByteBuffer b = ByteBuffer.allocate(2 * Long.BYTES);
         b.putLong(rootId);

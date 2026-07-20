@@ -113,7 +113,7 @@ final class FreeLog {
             tail.putLong(fp.pageId());
             tail.putLong(fp.epoch());
             tailCount++;
-            tail.putInt(Long.BYTES, tailCount); // count lives in the page header
+            tail.putInt(Long.BYTES, tailCount);
         }
         if (tail != null) {
             disc.writeRawPage(tailPageId, tail);
@@ -135,15 +135,13 @@ final class FreeLog {
             }
             consumed = true;
             if (headSlot < count) {
-                break; // read buffer filled mid-page; resume here on the next refill
+                break;
             }
             if (next != -1) {
-                // the drained queue page re-enters the log as a fresh free page
                 appendToWriteBuffer(new FreePage(headPageId, epochs.current()));
                 headPageId = next;
                 headSlot = 0;
             } else {
-                // last page emptied: reset the queue in place
                 headSlot = 0;
                 tailCount = 0;
                 headPage.putInt(Long.BYTES, 0);
@@ -179,8 +177,8 @@ final class FreeLog {
 
     static ByteBuffer emptyPage() {
         ByteBuffer b = ByteBuffer.wrap(new byte[Store.PAGE_SIZE]);
-        b.putLong(0, -1L);       // next = none
-        b.putInt(Long.BYTES, 0); // count = 0
+        b.putLong(0, -1L);
+        b.putInt(Long.BYTES, 0);
         return b;
     }
 }

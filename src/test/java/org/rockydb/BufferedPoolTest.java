@@ -104,7 +104,7 @@ class BufferedPoolTest {
         assertThrows(BufferExhaustedException.class, () -> pool.acquire(2L));
 
         held.unpin();
-        pool.acquire(2L).unpin(); // evictable again once unpinned
+        pool.acquire(2L).unpin();
     }
 
     @Test
@@ -115,7 +115,7 @@ class BufferedPoolTest {
         writeMarker(frame, (byte) 77);
         frame.unpin();
 
-        pool.acquire(2L).unpin(); // forces eviction of page 1
+        pool.acquire(2L).unpin();
 
         assertEquals(1, pool.getEvictions());
         assertEquals((byte) 77, disc.readRawPage(1L).get(0));

@@ -32,12 +32,6 @@ public class BufferedPool implements Closeable {
         this.clock = new Clock(this.frames);
     }
 
-    /**
-     * Returns a pinned frame holding page {@code id}, loading it from disk if necessary.
-     * The frame is guaranteed to keep holding that page until unpinned (a pinned frame
-     * can never be repurposed by the clock). Content access still needs the frame's
-     * {@code ioLock}.
-     */
     public Frame acquire(long id) {
         ensureOpen();
         while (true) {
@@ -53,22 +47,17 @@ public class BufferedPool implements Closeable {
                 } finally {
                     cached.ioLock.readLock().unlock();
                 }
-                cached.unpin(); // repurposed between lookup and pin; retry
+                cached.unpin();
                 continue;
             }
-            Frame victim = clock.findVictim(); // exclusively claimed (pinCount == 1)
+            Frame victim = clock.findVictim();
             if (installAndLoad(victim, id)) {
-                return victim; // pinned, pageId == id, content loaded
+                return victim;
             }
-            victim.unpin(); // lost the race for id; release the claim and retry
+            victim.unpin();
         }
     }
 
-    /**
-     * Like {@link #acquire} but skips the disk read: for freshly allocated pages whose
-     * current content is irrelevant (split right siblings, new roots) — the caller
-     * formats the whole page before publishing it.
-     */
     public Frame acquireBlank(long id) {
         ensureOpen();
         while (true) {
@@ -84,12 +73,12 @@ public class BufferedPool implements Closeable {
                 } finally {
                     cached.ioLock.readLock().unlock();
                 }
-                cached.unpin(); // repurposed between lookup and pin; retry
+                cached.unpin();
                 continue;
             }
             Frame victim = clock.findVictim();
             if (installBlank(victim, id)) {
-                return victim; // pinned, pageId == id, no disk read
+                return victim;
             }
             victim.unpin();
             continue;
@@ -112,7 +101,7 @@ public class BufferedPool implements Closeable {
                 pageToFrame.remove(oldId, victim);
                 evictions.increment();
             }
-            discStore.readRawPage(id, victim.bytes); // straight into the frame: no temp, no copy
+            discStore.readRawPage(id, victim.bytes);
             victim.setDirty(false);
             victim.setPageId(id);
             misses.increment();
@@ -152,7 +141,6 @@ public class BufferedPool implements Closeable {
         }
     }
 
-    /** Flushes all dirty frames to disk. Does not close the underlying {@link DiscStore}. */
     @Override
     public void close() throws IOException {
         closed = true;

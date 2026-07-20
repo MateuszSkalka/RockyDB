@@ -21,16 +21,13 @@ class EpochManagerTest {
 
     @Test
     void pageFreedAtEpochFIsSafeOnlyAfterEpochAdvancesPastF() {
-        // Core safety rule: a page freed at F is reusable only when F < safeEpoch(). While an op
-        // pinned at F is active, safeEpoch == F, so F < F is false -> not safe.
+        // a page freed at F is reusable only when F < safeEpoch() — strict, since a live op pinned at F holds safeEpoch == F
         EpochManager m = new EpochManager(0);
-        long ticket = m.enter();        // op pins epoch 0
+        long ticket = m.enter();
         assertEquals(0L, m.safeEpoch());
         assertFalse(0L < m.safeEpoch());
 
         m.exit(ticket);
-        // Quiescent, but current is still 0 -> 0 < 0 still false. The epoch must advance so that a
-        // FUTURE op sees a safeEpoch strictly greater than F.
         m.advance();
         assertTrue(0L < m.safeEpoch(), "after advancing past the retire epoch, the page is safe");
     }
@@ -47,14 +44,14 @@ class EpochManagerTest {
     @Test
     void multipleActiveOpsTakeMinimum() {
         EpochManager m = new EpochManager(0);
-        long a = m.enter();              // epoch 0
-        m.advance();                     // current -> 1
-        long b = m.enter();              // epoch 1
+        long a = m.enter();
+        m.advance();
+        long b = m.enter();
 
-        assertEquals(0L, m.safeEpoch()); // straggler at 0 keeps safeEpoch low
+        assertEquals(0L, m.safeEpoch());
 
         m.exit(a);
-        assertEquals(1L, m.safeEpoch()); // now the newer op is the oldest
+        assertEquals(1L, m.safeEpoch());
 
         m.exit(b);
         assertEquals(m.current(), m.safeEpoch());
@@ -63,7 +60,7 @@ class EpochManagerTest {
     @Test
     void exitIsIdempotentAgainstUnknownTicket() {
         EpochManager m = new EpochManager(0);
-        assertDoesNotThrow(() -> m.exit(999L)); // never entered
+        assertDoesNotThrow(() -> m.exit(999L));
     }
 
     @Test
@@ -71,19 +68,17 @@ class EpochManagerTest {
         EpochManager m = new EpochManager(3);
         long t = m.enter();
         m.exit(t);
-        assertEquals(m.current(), m.safeEpoch()); // entry is gone, not left at zero
+        assertEquals(m.current(), m.safeEpoch());
 
-        long t2 = m.enter(); // currentEpoch never advanced, so this re-enters the same epoch
-        assertEquals(3L, m.safeEpoch()); // and it must be tracked again
+        long t2 = m.enter();
+        assertEquals(3L, m.safeEpoch());
         m.exit(t2);
         assertEquals(m.current(), m.safeEpoch());
     }
 
     @Test
     void racingEnterAndExitNeverLosesAnActiveOp() throws Exception {
-        // Regression test for the exit-vs-enter race: exit decrements to 0 and removes the entry
-        // while a concurrent enter at the same epoch has already grabbed the counter. The op must
-        // stay visible, i.e. safeEpoch() may never pass a live op's ticket.
+        // regression: exit removing a zeroed entry must not hide a concurrent enter at the same epoch
         EpochManager m = new EpochManager(0);
         int threads = 8, iterations = 20_000;
         CyclicBarrier start = new CyclicBarrier(threads);
@@ -113,6 +108,6 @@ class EpochManagerTest {
         if (failure.get() != null) {
             fail(failure.get());
         }
-        assertEquals(m.current(), m.safeEpoch()); // all entries exited, nothing leaked
+        assertEquals(m.current(), m.safeEpoch());
     }
 }

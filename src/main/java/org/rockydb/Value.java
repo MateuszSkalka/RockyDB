@@ -4,7 +4,7 @@ import java.util.Arrays;
 import java.util.Objects;
 
 public record Value(byte[] bytes) implements Comparable<Value> {
-    private static final Value INFINITY = new Value(null); // null bytes → immutable, shareable
+    private static final Value INFINITY = new Value(null);
 
     public static Value infinity() {
         return INFINITY;
@@ -20,8 +20,8 @@ public record Value(byte[] bytes) implements Comparable<Value> {
         boolean thisInf = this.bytes == null;
         boolean oInf = o.bytes == null;
         if (thisInf && oInf) return 0;
-        if (thisInf) return 1;  // +inf > everything
-        if (oInf) return -1;    // everything < +inf
+        if (thisInf) return 1;
+        if (oInf) return -1;
         return Arrays.compareUnsigned(this.bytes, o.bytes);
     }
 

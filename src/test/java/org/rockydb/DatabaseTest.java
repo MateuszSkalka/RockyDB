@@ -83,8 +83,8 @@ class DatabaseTest {
             assertFalse(db.tableExists("t"));
             assertThrows(IllegalStateException.class, () -> db.get("t", v("k")));
 
-            db.createTable("t"); // name is free again
-            assertEquals(0, db.count("t")); // fresh empty table
+            db.createTable("t");
+            assertEquals(0, db.count("t"));
             assertNull(db.get("t", v("k")));
         }
     }
@@ -103,7 +103,7 @@ class DatabaseTest {
             for (int i = 0; i < 50; i++) {
                 assertEquals(v("val" + i), db.get("t", v("k" + i)), "missing key " + i);
             }
-            assertThrows(IllegalStateException.class, () -> db.createTable("t")); // still registered
+            assertThrows(IllegalStateException.class, () -> db.createTable("t"));
         }
     }
 
@@ -117,7 +117,6 @@ class DatabaseTest {
         try (Database db = new Database(file, 64)) {
             db.createTable("t");
             beforeSplit = db.rootPageIdOf("t");
-            // Large values force a leaf split and a root split well within 120 inserts.
             for (int i = 0; i < 120; i++) {
                 db.insert("t", v("k" + i), big);
             }
@@ -187,15 +186,12 @@ class DatabaseTest {
             db.createTable("t");
             Value big = new Value(new byte[200]);
             for (int i = 0; i < 120; i++) {
-                db.insert("t", v("k" + i), big); // forces splits -> a multi-page tree
+                db.insert("t", v("k" + i), big);
             }
             firstTreePages = db.highWaterMark();
             db.dropTable("t");
         }
 
-        // Reopen and run several create/populate/drop cycles. Without page recycling, each cycle's
-        // pages would leak and the high-water mark would keep climbing. With reclamation, the dropped
-        // table's pages come back through the free-log and the mark stays bounded.
         try (Database db = new Database(file, 64)) {
             long hwmAtReopen = db.highWaterMark();
             Value big = new Value(new byte[200]);
@@ -207,13 +203,10 @@ class DatabaseTest {
                 db.dropTable("t");
             }
             long finalHwm = db.highWaterMark();
-            // Allow modest slack for the catalog + free-log overhead, but the mark must not have grown
-            // by a full 5 trees' worth of pages.
             assertTrue(finalHwm <= hwmAtReopen + firstTreePages,
                     "high-water mark grew unboundedly across drop cycles: reopen=" + hwmAtReopen
                             + " final=" + finalHwm + " (first tree=" + firstTreePages + ")");
 
-            // And the table is genuinely gone, recreatable as empty.
             db.createTable("t");
             assertFalse(db.tableExists("nope"));
             assertNull(db.get("t", v("k0")));
@@ -222,8 +215,7 @@ class DatabaseTest {
 
     @Test
     void dropTableReclaimsDeepMultiLevelTree() throws Exception {
-        // Large keys+values so the tree reaches height >= 3 (root branch -> branch -> leaves),
-        // exercising reclamation across internal nodes, not just leaves.
+        // payload sized so the tree reaches height >= 3, exercising branch-page reclamation
         File file = newFile();
         long hwmBefore;
         try (Database db = new Database(file, 128)) {
@@ -236,8 +228,6 @@ class DatabaseTest {
             db.dropTable("t");
         }
 
-        // Reopen: the dropped tree's pages (leaves + internal branches + root) should be recycled.
-        // A fresh table populated to similar size should reuse them rather than grow the file much.
         try (Database db = new Database(file, 128)) {
             long hwmAtReopen = db.highWaterMark();
             db.createTable("t2");
@@ -246,7 +236,6 @@ class DatabaseTest {
                 db.insert("t2", bigKey(i, payload), bigValue(i, payload));
             }
             long hwmAfter = db.highWaterMark();
-            // Reusing the dropped tree's pages, t2 should fit within roughly the same footprint.
             assertTrue(hwmAfter <= hwmAtReopen + (hwmBefore / 2) + 16,
                     "deep tree not reclaimed: reopen=" + hwmAtReopen + " after=" + hwmAfter
                             + " before=" + hwmBefore);
@@ -263,14 +252,14 @@ class DatabaseTest {
             db.insert("users", v("bob"), v("2"));
             assertEquals(2, db.count("users"));
 
-            db.insert("users", v("alice"), v("1-updated")); // replace: count unchanged
+            db.insert("users", v("alice"), v("1-updated"));
             assertEquals(2, db.count("users"));
             assertEquals(v("1-updated"), db.get("users", v("alice")));
 
             db.delete("users", v("bob"));
             assertEquals(1, db.count("users"));
 
-            db.delete("users", v("carol")); // absent: no-op
+            db.delete("users", v("carol"));
             assertEquals(1, db.count("users"));
         }
     }
@@ -288,7 +277,7 @@ class DatabaseTest {
             assertEquals(48, db.count("t"));
         }
         try (Database db = new Database(file, 32)) {
-            assertEquals(48, db.count("t")); // restored from the catalog entry
+            assertEquals(48, db.count("t"));
             db.insert("t", v("k0"), v("back"));
             assertEquals(49, db.count("t"));
         }
@@ -304,15 +293,15 @@ class DatabaseTest {
         try (Database db = new Database(file, 64)) {
             db.createTable("t");
             for (int i = 0; i < 120; i++) {
-                db.insert("t", v("k" + i), big); // forces leaf and root splits
+                db.insert("t", v("k" + i), big);
             }
             assertEquals(120, db.count("t"));
             for (int i = 0; i < 120; i++) {
-                db.insert("t", v("k" + i), big); // replaces: count unchanged
+                db.insert("t", v("k" + i), big);
             }
             assertEquals(120, db.count("t"));
             for (int i = 0; i < 100; i++) {
-                db.delete("t", v("k" + i)); // underfills leaves, forces merges
+                db.delete("t", v("k" + i));
             }
             assertEquals(20, db.count("t"));
         }
@@ -338,7 +327,7 @@ class DatabaseTest {
                     futures.add(exec.submit(() -> {
                         start.await();
                         for (int i = 0; i < shared; i++) {
-                            db.insert("t", v("shared:" + i), v("val" + tid)); // same keys race across threads
+                            db.insert("t", v("shared:" + i), v("val" + tid));
                         }
                         for (int i = 0; i < perThread; i++) {
                             db.insert("t", v("own:" + tid + ":" + i), v("val"));
@@ -354,7 +343,6 @@ class DatabaseTest {
                 exec.shutdown();
             }
 
-            // shared keys count once (racing duplicates become replaces), own keys once each
             assertEquals(shared + threads * perThread, db.count("t"));
 
             for (int i = 0; i < shared; i++) {

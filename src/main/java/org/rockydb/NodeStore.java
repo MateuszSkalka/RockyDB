@@ -62,13 +62,11 @@ public class NodeStore implements Store, Closeable {
 
     @Override
     public PageWrite latchForWriteBlank(long id) {
-        return latch(pool.acquireBlank(id)); // fresh page: skip the stale-content disk read
+        return latch(pool.acquireBlank(id));
     }
 
     private PageWrite latch(Frame frame) {
-        // pin held → frame cannot be repurposed → identity stable. The writer mutates a
-        // private shadow copy of the page, so readers keep reading the last published
-        // version concurrently instead of blocking for the whole latch window.
+        // Pin keeps the frame un-repurposable; the writer mutates a shadow so readers never block.
         frame.treeLatch().lock();
         frame.ioLock.readLock().lock();
         byte[] shadow;
@@ -125,15 +123,14 @@ public class NodeStore implements Store, Closeable {
         return discStore.highWaterMark();
     }
 
-    /** Buffer-pool stats and frame-level access (monitoring, tests). */
     public BufferedPool pool() {
         return pool;
     }
 
     @Override
     public void close() throws IOException {
-        freeLog.flush(); // persist pending retires before anything else can be lost
-        pool.close(); // flush dirty frames first
+        freeLog.flush();
+        pool.close();
         discStore.writeEpoch(epochs.current());
         discStore.writeCount(elementCount.get());
         discStore.close();
@@ -194,14 +191,11 @@ public class NodeStore implements Store, Closeable {
             frame.setDirty(true);
             frame.bumpUsage();
             dirty = true;
-            // Publish now, not only at close: the merge path tombstones the right sibling
-            // (published by its own handle) while the absorbing left page is still latched,
-            // so the survivor's absorbed content must already be visible — otherwise a
-            // reader routing around the tombstone could read the stale survivor and miss keys.
+            // Publish immediately: merge tombstones the right sibling while the left page is
+            // still latched, so a reader routing around the tombstone must see the absorbed keys.
             publish();
         }
 
-        /** Copies the shadow over the frame bytes; readers stall only for this arraycopy. */
         private void publish() {
             frame.ioLock.writeLock().lock();
             try {
@@ -218,7 +212,7 @@ public class NodeStore implements Store, Closeable {
             }
             closed = true;
             if (dirty) {
-                publish(); // cover any mutation after the last markDirty
+                publish();
             }
             frame.treeLatch().unlock();
             frame.unpin();

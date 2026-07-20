@@ -184,6 +184,11 @@ consistency: keys inserted behind or deleted ahead of the scan position may not 
 
 ## Code patterns to follow
 
+- **No Javadoc, no comments by default.** The code must be self-explanatory — expressive
+  naming and clear structure instead of prose. Do not add Javadoc or `//` comments.
+  A comment is allowed only when absolutely necessary: a complex, non-obvious invariant
+  or subtle correctness argument that the code alone cannot convey (e.g. why a tombstone
+  must be written before a latch is released). When in doubt, delete.
 - There are **no node objects**: all tree logic is static ops on the page `byte[]`
   (`Pages`, `LeafPage`, `BranchPage`). Writers mutate the `PageWrite` shadow copy and
   call `markDirty()` (publishes it over the frame bytes immediately); readers hold a

@@ -2,29 +2,11 @@ package org.rockydb;
 
 import java.util.Arrays;
 
-/**
- * Leaf page operations on the raw page byte array. No node objects are materialized:
- * binary search runs directly over the slot array, mutations happen in place under the
- * caller's latch ({@code ioLock} write lock + tree latch). All ops are static; the page
- * id is not stored in the page — it is carried by the {@code PageRef}/{@code PageWrite}.
- *
- * <p>Tuple layout: {@code key[keyLen] | valueLen i32 | value[valueLen]}.
- * The fence key is stored as a standalone tuple referenced from the header; it is never
- * aliased to a slot key.
- *
- * <p>{@link #put} preflights space before touching the page: {@code SPLIT_NEEDED} leaves
- * the page logically unmodified (a compaction may have run). The split itself is done by
- * {@link #splitWithEntry}, which embeds the pending entry in the byte-balanced halves —
- * the same semantics as the old copy-on-write "grow then split".
- */
 final class LeafPage {
     private LeafPage() {}
 
     enum PutResult { INSERTED, REPLACED, SPLIT_NEEDED }
 
-    // ---- formatting ----
-
-    /** Formats an empty leaf into {@code p}; {@code fence == null} encodes +∞. */
     static void formatEmpty(byte[] p, int height, long link, byte[] fence) {
         p[Pages.FLAGS] = Pages.FLAG_LEAF;
         Pages.setCount(p, 0);
@@ -44,7 +26,6 @@ final class LeafPage {
         }
     }
 
-    /** Marked tombstone routing to {@code survivorId} via link; fence +∞ (as before). */
     static void formatTombstone(byte[] p, int height, long survivorId) {
         p[Pages.FLAGS] = Pages.FLAG_LEAF | Pages.FLAG_MARKED;
         Pages.setCount(p, 0);
@@ -56,13 +37,10 @@ final class LeafPage {
         Pages.putU16(p, Pages.FENCE_LEN, Pages.FENCE_INFINITE);
     }
 
-    // ---- reads ----
-
     static int find(byte[] p, byte[] key) {
         return Pages.find(p, key);
     }
 
-    /** Materializes the value on a hit — the only allocation on the read path. */
     static Value getValue(byte[] p, byte[] key) {
         int idx = find(p, key);
         if (idx < 0) {
@@ -92,7 +70,6 @@ final class LeafPage {
         return k;
     }
 
-    /** Fence key bytes, or {@code null} for +∞. Small copy, used on write paths only. */
     static byte[] fenceBytes(byte[] p) {
         int fl = Pages.u16(p, Pages.FENCE_LEN);
         if (fl == Pages.FENCE_INFINITE) {
@@ -111,10 +88,9 @@ final class LeafPage {
         if (fl == Pages.FENCE_INFINITE || Pages.link(p) == Pages.NO_LINK) {
             return false;
         }
-        return Pages.compareRaw(p, Pages.u16(p, Pages.FENCE_OFF), fl, key) < 0; // key > fence
+        return Pages.compareRaw(p, Pages.u16(p, Pages.FENCE_OFF), fl, key) < 0;
     }
 
-    /** Next page to visit for {@code key}: right link while marked or past the fence, else -1. */
     static long nextNode(byte[] p, byte[] key) {
         if (shouldGoRight(p, key)) {
             return Pages.link(p);
@@ -126,12 +102,6 @@ final class LeafPage {
         return Pages.needsMerge(p);
     }
 
-    // ---- mutations ----
-
-    /**
-     * Inserts or replaces in place. {@code SPLIT_NEEDED} leaves the page logically
-     * unmodified — the caller then splits via {@link #splitWithEntry}.
-     */
     static PutResult put(byte[] p, byte[] key, byte[] value) {
         int idx = find(p, key);
         int tupleLen = key.length + Integer.BYTES + value.length;
@@ -148,12 +118,11 @@ final class LeafPage {
                 }
                 return result;
             }
-            // grow-replace: preflight (old tuple becomes reclaimable) before touching the page
             if (Pages.contiguousFree(p) + Pages.deadBytes(p) + oldTupleLen < Pages.SLOT_SIZE + tupleLen) {
                 return PutResult.SPLIT_NEEDED;
             }
             Pages.putU16(p, Pages.DEAD_BYTES, Pages.deadBytes(p) + oldTupleLen);
-            Pages.removeSlot(p, idx); // insertion point for the new tuple stays idx
+            Pages.removeSlot(p, idx);
         } else {
             idx = -(idx + 1);
         }
@@ -179,20 +148,8 @@ final class LeafPage {
         return true;
     }
 
-    /**
-     * Splits {@code left}'s entries plus the pending {@code (key, value)} byte-balanced into
-     * {@code left} (rewritten) and {@code right} (a blank page array). The pending entry
-     * replaces an equal key or is inserted in sort order, so the halves always contain it —
-     * one split, no retry loop, same semantics as the old copy-on-write split.
-     *
-     * @param oldFence left's fence before the split (captured by the caller via
-     *                 {@link #fenceBytes}); becomes right's fence and the parent's
-     *                 downlink key for right. {@code null} = +∞.
-     * @return the promoted key (left's new biggest) as a byte copy for the parent insert
-     */
     static byte[] splitWithEntry(byte[] left, byte[] right, long rightId,
                                  byte[] oldFence, byte[] key, byte[] value) {
-        // gather live entries as copies (left is rewritten below), merged with the pending entry
         int n = Pages.count(left);
         byte[][] keys = new byte[n + 1][];
         byte[][] vals = new byte[n + 1][];
@@ -208,7 +165,7 @@ final class LeafPage {
                     pending = false;
                 } else if (cmp == 0) {
                     keys[m] = key;
-                    vals[m++] = value; // replace: pending entry takes the old slot
+                    vals[m++] = value;
                     pending = false;
                     continue;
                 }
@@ -245,7 +202,6 @@ final class LeafPage {
         return keys[mid];
     }
 
-    /** Formats {@code p} as a leaf holding {@code keys[from..to)} and fence {@code fence}. */
     private static void rewriteHalf(byte[] p, byte[][] keys, byte[][] vals, int from, int to,
                                     int height, long link, byte[] fence) {
         formatEmpty(p, height, link, fence);
@@ -262,12 +218,6 @@ final class LeafPage {
         Pages.setCount(p, to - from);
     }
 
-    /**
-     * Replaces the fence, marking the old fence bytes dead. Fences are only rewritten on
-     * split/merge (both rebuild or compact the page first), so contiguous space always
-     * suffices here; throws otherwise (a fence duplicates key bytes — same practical
-     * key-size limit as the old format).
-     */
     static void setFence(byte[] p, byte[] fence) {
         int old = Pages.u16(p, Pages.FENCE_LEN);
         if (old != Pages.FENCE_INFINITE) {
@@ -288,12 +238,10 @@ final class LeafPage {
         Pages.putU16(p, Pages.FENCE_LEN, fence.length);
     }
 
-    /** Conservative combined-fit check (left's old fence is double-counted). */
     static boolean canMerge(byte[] left, byte[] right) {
         return Pages.liveBytes(left) + Pages.liveBytes(right) <= Pages.MAX_BODY;
     }
 
-    /** Absorbs right's entries, fence and link into left. Caller checks {@link #canMerge}. */
     static void mergeFrom(byte[] left, byte[] right) {
         compact(left);
         compact(right);
@@ -316,8 +264,6 @@ final class LeafPage {
         setFence(left, fenceBytes(right));
     }
 
-    // ---- internals ----
-
     static int tupleLenAt(byte[] p, int idx) {
         int off = Pages.keyOff(p, idx);
         int klen = Pages.keyLen(p, idx);
@@ -335,13 +281,9 @@ final class LeafPage {
         return Pages.contiguousFree(p) >= needed;
     }
 
-    /**
-     * Repacks tuples in slot order below the fence at the top of the page; deadBytes → 0.
-     * Fence-at-top keeps a page's live region contiguous at the top, which is what makes
-     * {@link #mergeFrom}'s bottom-copy and hole-free accounting work.
-     */
+    // Fence-at-top keeps the live region contiguous at the top of the page; mergeFrom's bottom-copy relies on it.
     static void compact(byte[] p) {
-        byte[] scratch = new byte[Store.PAGE_SIZE]; // rare path, like PG's PageRepairFragmentation
+        byte[] scratch = new byte[Store.PAGE_SIZE];
         int n = Pages.count(p);
         int fl = Pages.u16(p, Pages.FENCE_LEN);
         int upper = Store.PAGE_SIZE;

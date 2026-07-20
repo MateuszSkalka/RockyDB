@@ -6,18 +6,10 @@ import java.util.Deque;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
-/**
- * B-Link tree (Lehman & Yao) over raw slotted pages. All node access runs directly on
- * page byte arrays via the static {@link LeafPage}/{@link BranchPage} ops — no node
- * materialization anywhere: descents binary-search the slot array, writers mutate a
- * shadow copy of the page under their latches ({@link PageWrite}), and even split
- * propagation copies raw key bytes.
- */
 public class BLinkTree {
     private final Store store;
     private final RootRef rootRef;
 
-    /** A single key/value pair returned by {@link #entries()}. */
     public record Entry(Value key, Value value) {}
 
     public BLinkTree(Store store) {
@@ -38,30 +30,10 @@ public class BLinkTree {
         }
     }
 
-    /**
-     * Exact number of key/value pairs in the tree. O(1): the count is a cached
-     * counter maintained by {@link #addValue} and {@link #delete} (MyISAM-style —
-     * viable because there is no MVCC, so a single count is well-defined). Reflects
-     * ops completed so far; concurrently running ops may or may not be included.
-     */
     public long count() {
         return rootRef.count();
     }
 
-    /**
-     * Full-table scan in ascending key order: descends to the leftmost leaf and follows
-     * right links across the leaf level. The iterator is LAZY — it streams one leaf at a
-     * time (a single 8KB snapshot copy per leaf), so memory stays O(page) and tables
-     * larger than RAM can be scanned — and holds its epoch ticket for its whole lifetime,
-     * releasing it when exhausted (or if a read fails). <b>Callers must consume it
-     * fully</b>: an abandoned iterator leaks its epoch ticket and stalls FreeLog page
-     * recycling (accepted risk for internal use). Scan reads skip the clock-usage bump,
-     * so a large scan does not evict the hot working set from the buffer pool.
-     * Concurrent splits/merges during the scan are tolerated: merged-away tombstones route
-     * to their survivor and already-emitted keys are skipped, so entries present for the
-     * whole scan are neither missed nor duplicated (weak consistency: keys inserted behind
-     * or deleted ahead of the scan position may not appear).
-     */
     public Iterator<Entry> entries() {
         long ticket = store.enterOp();
         try {
@@ -77,7 +49,7 @@ public class BLinkTree {
         while (true) {
             try (PageRef ref = store.readPage(id)) {
                 byte[] p = ref.bytes();
-                if (Pages.isMarked(p)) { // merge/root-collapse tombstone: link → survivor
+                if (Pages.isMarked(p)) {
                     id = Pages.link(p);
                 } else if (Pages.isLeaf(p)) {
                     return id;
@@ -88,13 +60,6 @@ public class BLinkTree {
         }
     }
 
-    /**
-     * Streams the leaf level one leaf snapshot (single array copy) at a time. All state
-     * between calls is {@code currentId} + {@code lastKey} + the current snapshot, so
-     * resuming is just "re-read the next page fresh" — splits that moved entries right are
-     * followed via links, merges route around tombstones, and keys {@code <= lastKey} are
-     * never re-emitted.
-     */
     private final class EntryIterator implements Iterator<Entry> {
         private final long ticket;
         private long currentId;
@@ -129,14 +94,12 @@ public class BLinkTree {
             return entry;
         }
 
-        /** Moves to the next leaf with un-emitted keys; releases the epoch when the
-         *  chain ends or a read fails. */
         private boolean advance() {
             try {
                 while (currentId != -1) {
-                    try (PageRef ref = store.readPage(currentId, false)) { // no clock-usage bump
+                    try (PageRef ref = store.readPage(currentId, false)) {
                         byte[] p = ref.bytes();
-                        if (Pages.isMarked(p)) { // merged away mid-scan: route to the survivor
+                        if (Pages.isMarked(p)) {
                             currentId = Pages.link(p);
                             continue;
                         }
@@ -145,11 +108,8 @@ public class BLinkTree {
                     int from = 0;
                     if (lastKey != null) {
                         int i = LeafPage.find(snapshot, lastKey.bytes());
-                        from = i >= 0 ? i + 1 : -(i + 1); // skip keys already emitted
+                        from = i >= 0 ? i + 1 : -(i + 1);
                     }
-                    // Cross via this snapshot's link: its keys and link are consistent
-                    // (copied under the read lock), anything that moved right is caught by
-                    // tombstone routing + the lastKey skip at the target.
                     currentId = Pages.link(snapshot);
                     if (from < Pages.count(snapshot)) {
                         count = Pages.count(snapshot);
@@ -162,7 +122,7 @@ public class BLinkTree {
                 return false;
             } catch (RuntimeException e) {
                 done = true;
-                store.exitOp(ticket); // don't leak the epoch on failure
+                store.exitOp(ticket);
                 throw e;
             }
         }
@@ -195,12 +155,6 @@ public class BLinkTree {
         }
     }
 
-    /**
-     * Descends from the root to the leaf responsible for {@code key}, latches it and
-     * latch-couples rightward past any splits until the correct leaf is held. Branch
-     * nodes followed by downlink (not right-link hops) are pushed onto {@code ancestors}
-     * for later split propagation. Returns the latched leaf's handle.
-     */
     private PageWrite latchLeafForKey(byte[] key, Deque<Long> ancestors) {
         long currentId = rootRef.get();
         while (true) {
@@ -210,7 +164,7 @@ public class BLinkTree {
                     break;
                 }
                 long next = BranchPage.nextNode(p, key);
-                if (Pages.link(p) != next) { // downlink, not a right-link hop
+                if (Pages.link(p) != next) {
                     ancestors.push(currentId);
                 }
                 currentId = next;
@@ -239,27 +193,23 @@ public class BLinkTree {
             LeafPage.PutResult put = LeafPage.put(handle.bytes(), key, value);
             if (put != LeafPage.PutResult.SPLIT_NEEDED) {
                 handle.markDirty();
-                if (put == LeafPage.PutResult.INSERTED) { // replace leaves the count unchanged
+                if (put == LeafPage.PutResult.INSERTED) {
                     rootRef.addToCount(1);
                 }
                 return;
             }
 
-            // The leaf is latched, so this existence check is exact (splitWithEntry embeds
-            // both fresh inserts and grow-replaces; only brand-new keys grow the count).
+            // exact: the leaf is latched, so only brand-new keys grow the count
             boolean isNewKey = LeafPage.find(handle.bytes(), key) < 0;
 
-            // Split cascade: `handle` always latches the splitting (left) page. The first
-            // split embeds the pending put; later splits embed the pending downlink change.
             boolean splittingLeaf = true;
-            byte[] splitKey = key;     // leaf: put key;      branch: downlink fence to replace
-            byte[] splitValue = value; // leaf: put value;    branch: promoted key replacing it
-            long splitChildId = -1;    // branch only: child of the new right downlink
+            byte[] splitKey = key;
+            byte[] splitValue = value;
+            long splitChildId = -1;
             while (true) {
                 byte[] left = handle.bytes();
                 long leftId = handle.id();
                 int leftHeight = Pages.height(left);
-                // old fence = parent's downlink key for left; capture before the split rewrites it
                 byte[] oldFence = splittingLeaf ? LeafPage.fenceBytes(left) : BranchPage.biggestKeyBytes(left);
                 long rightId = store.allocate();
                 byte[] promoted;
@@ -271,7 +221,7 @@ public class BLinkTree {
                 }
                 handle.markDirty();
 
-                if (rootRef.get() == leftId) { // root split: height grows
+                if (rootRef.get() == leftId) {
                     createNewRoot(leftId, rightId, promoted, oldFence, leftHeight + 1);
                     break;
                 }
@@ -294,8 +244,6 @@ public class BLinkTree {
                     parent.close();
                     break;
                 }
-                // parent itself must split: it becomes the new left, embedding its own
-                // pending downlink change in the halves
                 handle.close();
                 handle = parent;
                 splittingLeaf = false;
@@ -326,7 +274,7 @@ public class BLinkTree {
         boolean merged = false;
         try {
             if (!LeafPage.remove(handle.bytes(), key)) {
-                return; // absent: no mutation, no dirty marking
+                return;
             }
             handle.markDirty();
             rootRef.addToCount(-1);
@@ -342,23 +290,13 @@ public class BLinkTree {
         } finally {
             handle.close();
         }
-        // Only a merge (downlink removal) can leave the root with a single child, so skip
-        // the extra pooled root read when this delete merged nothing. Must run after the
-        // handle is closed: the topmost merged node may be the root itself, and latching
-        // it again while a shadow for it is still open would let that stale shadow
-        // overwrite the collapse tombstone at close.
+        // must run after the handle is closed: a stale shadow for the topmost merged
+        // node (possibly the root) would overwrite the collapse tombstone at close
         if (merged) {
             collapseRootIfSingleChild();
         }
     }
 
-    /**
-     * Merges the right sibling into the currently latched node, tombstones and retires the
-     * right page, and removes its downlink from the parent. Returns the latched parent to
-     * continue the upward cascade, or {@code null} when the merge cannot proceed (sibling
-     * marked/too big, no parent candidate, downlinks no longer adjacent) — in that case all
-     * handles except the caller's are released.
-     */
     private PageWrite tryAbsorbRight(PageWrite handle, Deque<Long> ancestors) {
         byte[] current = handle.bytes();
         long rightId = Pages.link(current);
@@ -398,7 +336,7 @@ public class BLinkTree {
         rightHandle.close();
         store.retire(rightPageId);
 
-        if (!BranchPage.removeDownlink(parent, rightFence)) { // merge stays applied either way
+        if (!BranchPage.removeDownlink(parent, rightFence)) {
             parentHandle.close();
             return null;
         }
@@ -408,10 +346,6 @@ public class BLinkTree {
         return parentHandle;
     }
 
-    /**
-     * Latches {@code startId} and latch-couples rightward while the node is a tombstone or
-     * its fence is below {@code guideKey} ({@code null} = +∞), returning the live node.
-     */
     private PageWrite latchLiveNode(Long startId, byte[] guideKey) {
         PageWrite h = store.latchForWrite(startId);
         while (shouldGoRight(h.bytes(), guideKey)) {
@@ -456,7 +390,6 @@ public class BLinkTree {
         }
     }
 
-    /** {@code rightFence == null} encodes the +∞ downlink key of a rightmost child. */
     private void createNewRoot(long leftId, long rightId, byte[] promoted, byte[] rightFence, int height) {
         long newRootId = store.allocate();
         try (PageWrite root = store.latchForWriteBlank(newRootId)) {

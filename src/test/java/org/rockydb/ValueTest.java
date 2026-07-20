@@ -38,9 +38,7 @@ class ValueTest {
 
     @Test
     void compareToOrdersBytesAsUnsignedAcrossHighBitBoundary() {
-        // Regression: a byte >= 0x80 must compare GREATER than a byte < 0x80. Signed comparison
-        // (Arrays.compare) treats 0x80 as -128 and would order it before 0x00, which corrupts
-        // binary search and the leftmost-leaf invariant whenever a key's bytes cross 0x80.
+        // Signed comparison would order 0x80 before 0x00 and corrupt key ordering.
         Value zero = new Value(new byte[]{0x00});
         Value highBit = new Value(new byte[]{(byte) 0x80});
         Value max = new Value(new byte[]{(byte) 0xFF});
@@ -53,8 +51,6 @@ class ValueTest {
 
     @Test
     void compareToOrdersMultibyteKeysUnsigned() {
-        // Keys like the free-tree composite (epoch|pageId, big-endian) rely on unsigned ordering
-        // to keep FIFO-by-epoch correct.
         Value small = new Value(new byte[]{0x00, 0x00});
         Value mid = new Value(new byte[]{0x00, (byte) 0x80});
         Value big = new Value(new byte[]{0x01, 0x00});
