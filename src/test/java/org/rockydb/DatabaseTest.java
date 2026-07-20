@@ -67,6 +67,7 @@ class DatabaseTest {
             assertThrows(IllegalStateException.class, () -> db.insert("nope", v("k"), v("v")));
             assertThrows(IllegalStateException.class, () -> db.get("nope", v("k")));
             assertThrows(IllegalStateException.class, () -> db.delete("nope", v("k")));
+            assertThrows(IllegalStateException.class, () -> db.count("nope"));
             assertThrows(IllegalStateException.class, () -> db.dropTable("nope"));
         }
     }
@@ -76,13 +77,15 @@ class DatabaseTest {
         try (Database db = new Database(newFile(), 16)) {
             db.createTable("t");
             db.insert("t", v("k"), v("1"));
+            assertEquals(1, db.count("t"));
             db.dropTable("t");
 
             assertFalse(db.tableExists("t"));
             assertThrows(IllegalStateException.class, () -> db.get("t", v("k")));
 
             db.createTable("t"); // name is free again
-            assertNull(db.get("t", v("k"))); // fresh empty table
+            assertEquals(0, db.count("t")); // fresh empty table
+            assertNull(db.get("t", v("k")));
         }
     }
 
@@ -247,6 +250,117 @@ class DatabaseTest {
             assertTrue(hwmAfter <= hwmAtReopen + (hwmBefore / 2) + 16,
                     "deep tree not reclaimed: reopen=" + hwmAtReopen + " after=" + hwmAfter
                             + " before=" + hwmBefore);
+        }
+    }
+
+    @Test
+    void countTracksInsertsReplacesAndDeletes() throws Exception {
+        try (Database db = new Database(newFile(), 16)) {
+            db.createTable("users");
+            assertEquals(0, db.count("users"));
+
+            db.insert("users", v("alice"), v("1"));
+            db.insert("users", v("bob"), v("2"));
+            assertEquals(2, db.count("users"));
+
+            db.insert("users", v("alice"), v("1-updated")); // replace: count unchanged
+            assertEquals(2, db.count("users"));
+            assertEquals(v("1-updated"), db.get("users", v("alice")));
+
+            db.delete("users", v("bob"));
+            assertEquals(1, db.count("users"));
+
+            db.delete("users", v("carol")); // absent: no-op
+            assertEquals(1, db.count("users"));
+        }
+    }
+
+    @Test
+    void countPersistsAcrossReopen() throws Exception {
+        File file = newFile();
+        try (Database db = new Database(file, 32)) {
+            db.createTable("t");
+            for (int i = 0; i < 50; i++) {
+                db.insert("t", v("k" + i), v("val" + i));
+            }
+            db.delete("t", v("k0"));
+            db.delete("t", v("k1"));
+            assertEquals(48, db.count("t"));
+        }
+        try (Database db = new Database(file, 32)) {
+            assertEquals(48, db.count("t")); // restored from the catalog entry
+            db.insert("t", v("k0"), v("back"));
+            assertEquals(49, db.count("t"));
+        }
+        try (Database db = new Database(file, 32)) {
+            assertEquals(49, db.count("t"));
+        }
+    }
+
+    @Test
+    void countStaysExactThroughSplitsAndMerges() throws Exception {
+        File file = newFile();
+        Value big = new Value(new byte[200]);
+        try (Database db = new Database(file, 64)) {
+            db.createTable("t");
+            for (int i = 0; i < 120; i++) {
+                db.insert("t", v("k" + i), big); // forces leaf and root splits
+            }
+            assertEquals(120, db.count("t"));
+            for (int i = 0; i < 120; i++) {
+                db.insert("t", v("k" + i), big); // replaces: count unchanged
+            }
+            assertEquals(120, db.count("t"));
+            for (int i = 0; i < 100; i++) {
+                db.delete("t", v("k" + i)); // underfills leaves, forces merges
+            }
+            assertEquals(20, db.count("t"));
+        }
+        try (Database db = new Database(file, 64)) {
+            assertEquals(20, db.count("t"));
+        }
+    }
+
+    @Test
+    void concurrentInsertsAndDeletesKeepCountExact() throws Exception {
+        int threads = 4;
+        int perThread = 200;
+        int shared = 100;
+        try (Database db = new Database(newFile(), 128)) {
+            db.createTable("t");
+
+            ExecutorService exec = Executors.newFixedThreadPool(threads);
+            CountDownLatch start = new CountDownLatch(1);
+            try {
+                List<Future<?>> futures = new ArrayList<>();
+                for (int t = 0; t < threads; t++) {
+                    final int tid = t;
+                    futures.add(exec.submit(() -> {
+                        start.await();
+                        for (int i = 0; i < shared; i++) {
+                            db.insert("t", v("shared:" + i), v("val" + tid)); // same keys race across threads
+                        }
+                        for (int i = 0; i < perThread; i++) {
+                            db.insert("t", v("own:" + tid + ":" + i), v("val"));
+                        }
+                        return null;
+                    }));
+                }
+                start.countDown();
+                for (Future<?> f : futures) {
+                    f.get();
+                }
+            } finally {
+                exec.shutdown();
+            }
+
+            // shared keys count once (racing duplicates become replaces), own keys once each
+            assertEquals(shared + threads * perThread, db.count("t"));
+
+            for (int i = 0; i < shared; i++) {
+                db.delete("t", v("shared:" + i));
+            }
+            assertEquals(threads * perThread, db.count("t"));
         }
     }
 

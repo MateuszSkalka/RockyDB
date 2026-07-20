@@ -64,6 +64,38 @@ public class BufferedPool implements Closeable {
         }
     }
 
+    /**
+     * Like {@link #acquire} but skips the disk read: for freshly allocated pages whose
+     * current content is irrelevant (split right siblings, new roots) — the caller
+     * formats the whole page before publishing it.
+     */
+    public Frame acquireBlank(long id) {
+        ensureOpen();
+        while (true) {
+            Frame cached = pageToFrame.get(id);
+            if (cached != null) {
+                cached.pin();
+                cached.ioLock.readLock().lock();
+                try {
+                    if (cached.pageId() == id) {
+                        hits.increment();
+                        return cached;
+                    }
+                } finally {
+                    cached.ioLock.readLock().unlock();
+                }
+                cached.unpin(); // repurposed between lookup and pin; retry
+                continue;
+            }
+            Frame victim = clock.findVictim();
+            if (installBlank(victim, id)) {
+                return victim; // pinned, pageId == id, no disk read
+            }
+            victim.unpin();
+            continue;
+        }
+    }
+
     private boolean installAndLoad(Frame victim, long id) {
         victim.ioLock.writeLock().lock();
         try {
@@ -80,8 +112,31 @@ public class BufferedPool implements Closeable {
                 pageToFrame.remove(oldId, victim);
                 evictions.increment();
             }
-            ByteBuffer page = discStore.readRawPage(id);
-            System.arraycopy(page.array(), 0, victim.bytes, 0, Store.PAGE_SIZE);
+            discStore.readRawPage(id, victim.bytes); // straight into the frame: no temp, no copy
+            victim.setDirty(false);
+            victim.setPageId(id);
+            misses.increment();
+            return true;
+        } finally {
+            victim.ioLock.writeLock().unlock();
+        }
+    }
+
+    private boolean installBlank(Frame victim, long id) {
+        victim.ioLock.writeLock().lock();
+        try {
+            Frame existing = pageToFrame.putIfAbsent(id, victim);
+            if (existing != null) {
+                return false;
+            }
+            long oldId = victim.pageId();
+            if (oldId != Frame.FREE) {
+                if (victim.isDirty()) {
+                    discStore.writeRawPage(oldId, ByteBuffer.wrap(victim.bytes));
+                }
+                pageToFrame.remove(oldId, victim);
+                evictions.increment();
+            }
             victim.setDirty(false);
             victim.setPageId(id);
             misses.increment();

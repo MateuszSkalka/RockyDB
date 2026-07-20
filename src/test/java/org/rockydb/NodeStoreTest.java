@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -42,50 +43,47 @@ class NodeStoreTest {
     }
 
     @Test
-    void readNodeReturnsInitializedRootLeaf() throws Exception {
+    void readPageReturnsInitializedRootLeaf() throws Exception {
         store = new NodeStore(dbFile, 16);
         long rootId = store.rootId();
 
-        Node root = store.readNode(rootId);
-
-        assertTrue(root.isLeaf());
-        assertEquals(rootId, root.id());
+        try (PageRef ref = store.readPage(rootId)) {
+            assertTrue(Pages.isLeaf(ref.bytes()));
+            assertEquals(rootId, ref.id());
+        }
     }
 
     @Test
-    void writeNodeThenReadNodeRoundTripsWithinCache() throws Exception {
+    void latchMutationsThenReadRoundTripsWithinCache() throws Exception {
         store = new NodeStore(dbFile, 16);
         long rootId = store.rootId();
-        Value[] keys = {v("a"), v("c")};
-        Value[] values = {v("1"), v("3")};
-        LeafNode written = new LeafNode(rootId, 1, keys, values, -1L);
 
-        store.writeNode(written);
-
-        LeafNode read = (LeafNode) store.readNode(rootId);
-        assertArrayEquals(keys, read.getKeys());
-        assertArrayEquals(values, read.getValues());
-    }
-
-    @Test
-    void latchForWriteGetSetAndCloseRoundTrip() throws Exception {
-        store = new NodeStore(dbFile, 16);
-        long rootId = store.rootId();
-        Value[] keys = {v("a")};
-        Value[] values = {v("1")};
-
-        try (WriteHandle handle = store.latchForWrite(rootId)) {
-            Node before = handle.get();
-            assertTrue(before.isLeaf());
-
-            handle.set(new LeafNode(rootId, 1, keys, values, -1L));
-
-            LeafNode after = (LeafNode) handle.get();
-            assertArrayEquals(keys, after.getKeys());
+        try (PageWrite w = store.latchForWrite(rootId)) {
+            LeafPage.put(w.bytes(), v("a").bytes(), v("1").bytes());
+            LeafPage.put(w.bytes(), v("c").bytes(), v("3").bytes());
+            w.markDirty();
         }
 
-        LeafNode read = (LeafNode) store.readNode(rootId);
-        assertArrayEquals(keys, read.getKeys());
+        try (PageRef ref = store.readPage(rootId)) {
+            assertEquals(v("1"), LeafPage.getValue(ref.bytes(), v("a").bytes()));
+            assertEquals(v("3"), LeafPage.getValue(ref.bytes(), v("c").bytes()));
+        }
+    }
+
+    @Test
+    void latchForWriteBlankSkipsContentButPublishesFormattedPage() throws Exception {
+        store = new NodeStore(dbFile, 16);
+        long blankId = store.allocate();
+
+        try (PageWrite w = store.latchForWriteBlank(blankId)) {
+            LeafPage.formatEmpty(w.bytes(), 1, Pages.NO_LINK, null);
+            LeafPage.put(w.bytes(), v("fresh").bytes(), v("page").bytes());
+            w.markDirty();
+        }
+
+        try (PageRef ref = store.readPage(blankId)) {
+            assertEquals(v("page"), LeafPage.getValue(ref.bytes(), v("fresh").bytes()));
+        }
     }
 
     @Test
@@ -93,11 +91,57 @@ class NodeStoreTest {
         store = new NodeStore(dbFile, 16);
         long rootId = store.rootId();
 
-        WriteHandle handle = store.latchForWrite(rootId);
+        PageWrite handle = store.latchForWrite(rootId);
         handle.close();
         handle.close();
 
         store.latchForWrite(rootId).close();
+    }
+
+    @Test
+    void readerIsNotBlockedDuringWriteLatchWindow() throws Exception {
+        store = new NodeStore(dbFile, 16);
+        long rootId = store.rootId();
+        try (PageWrite w = store.latchForWrite(rootId)) {
+            LeafPage.put(w.bytes(), v("a").bytes(), v("1").bytes());
+            w.markDirty();
+        }
+
+        PageWrite w = store.latchForWrite(rootId);
+        LeafPage.put(w.bytes(), v("b").bytes(), v("2").bytes()); // shadow only, unpublished
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        try {
+            // A reader on another thread must see the last published version immediately —
+            // with a write lock held for the latch window this would block until close().
+            Future<Value[]> read = exec.submit(() -> {
+                try (PageRef ref = store.readPage(rootId)) {
+                    return new Value[]{
+                            LeafPage.getValue(ref.bytes(), v("a").bytes()),
+                            LeafPage.getValue(ref.bytes(), v("b").bytes())};
+                }
+            });
+            Value[] seen = read.get(5, TimeUnit.SECONDS);
+            assertEquals(v("1"), seen[0]);
+            assertNull(seen[1], "unpublished shadow mutation leaked to a reader");
+        } finally {
+            exec.shutdown();
+            w.close();
+        }
+    }
+
+    @Test
+    void markDirtyPublishesShadowBeforeClose() throws Exception {
+        store = new NodeStore(dbFile, 16);
+        long rootId = store.rootId();
+
+        PageWrite w = store.latchForWrite(rootId);
+        LeafPage.put(w.bytes(), v("k").bytes(), v("v").bytes());
+        w.markDirty();
+
+        try (PageRef ref = store.readPage(rootId)) { // same thread: write lock not held mid-window
+            assertEquals(v("v"), LeafPage.getValue(ref.bytes(), v("k").bytes()));
+        }
+        w.close();
     }
 
     @Test
@@ -142,9 +186,9 @@ class NodeStoreTest {
         store = new NodeStore(dbFile, 1);
         long rootId = store.rootId();
 
-        WriteHandle held = store.latchForWrite(rootId);
+        PageWrite held = store.latchForWrite(rootId);
 
-        assertThrows(BufferExhaustedException.class, () -> store.readNode(rootId + 1));
+        assertThrows(BufferExhaustedException.class, () -> store.readPage(rootId + 1));
 
         held.close();
     }

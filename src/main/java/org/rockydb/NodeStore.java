@@ -4,6 +4,8 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class NodeStore implements Store, Closeable {
 
@@ -11,6 +13,7 @@ public class NodeStore implements Store, Closeable {
     private final BufferedPool pool;
     private final EpochManager epochs;
     private final FreeLog freeLog;
+    private final AtomicLong elementCount;
 
     public NodeStore(File dbFile, int numFrames) throws IOException {
         this.discStore = new DiscStore(dbFile);
@@ -21,12 +24,14 @@ public class NodeStore implements Store, Closeable {
         this.epochs = new EpochManager(discStore.loadEpoch() + 1);
         this.freeLog = new FreeLog(
                 discStore, epochs, discStore.freeLogHeadPacked(), discStore.freeLogTailPacked());
+        this.elementCount = new AtomicLong(discStore.loadCount());
     }
 
     private void bootstrap() {
         long dataRootId = discStore.allocateRaw();
-        Node dataRoot = new LeafNode(dataRootId, 1, new Value[]{}, new Value[]{}, -1L, Value.infinity(), false);
-        discStore.writeRawPage(dataRootId, PageCodec.serialize(dataRoot));
+        byte[] root = new byte[Store.PAGE_SIZE];
+        LeafPage.formatEmpty(root, 1, Pages.NO_LINK, null);
+        discStore.writeRawPage(dataRootId, ByteBuffer.wrap(root));
         discStore.updateRootId(dataRootId);
 
         long freePageId = discStore.allocateRaw();
@@ -36,36 +41,43 @@ public class NodeStore implements Store, Closeable {
     }
 
     @Override
-    public Node readNode(long id) {
+    public PageRef readPage(long id) {
+        return readPage(id, true);
+    }
+
+    @Override
+    public PageRef readPage(long id, boolean bumpUsage) {
         Frame frame = pool.acquire(id);
         frame.ioLock.readLock().lock();
-        try {
+        if (bumpUsage) {
             frame.bumpUsage();
-            return PageCodec.deserialize(id, ByteBuffer.wrap(frame.bytes));
+        }
+        return new PinnedPageRef(frame);
+    }
+
+    @Override
+    public PageWrite latchForWrite(long id) {
+        return latch(pool.acquire(id));
+    }
+
+    @Override
+    public PageWrite latchForWriteBlank(long id) {
+        return latch(pool.acquireBlank(id)); // fresh page: skip the stale-content disk read
+    }
+
+    private PageWrite latch(Frame frame) {
+        // pin held → frame cannot be repurposed → identity stable. The writer mutates a
+        // private shadow copy of the page, so readers keep reading the last published
+        // version concurrently instead of blocking for the whole latch window.
+        frame.treeLatch().lock();
+        frame.ioLock.readLock().lock();
+        byte[] shadow;
+        try {
+            shadow = Arrays.copyOf(frame.bytes, Store.PAGE_SIZE);
         } finally {
             frame.ioLock.readLock().unlock();
-            frame.unpin();
         }
-    }
-
-    @Override
-    public Node writeNode(Node node) {
-        Frame frame = pool.acquire(node.id());
-        frame.ioLock.writeLock().lock();
-        try {
-            writeToFrame(node, frame);
-        } finally {
-            frame.ioLock.writeLock().unlock();
-            frame.unpin();
-        }
-        return node;
-    }
-
-    @Override
-    public WriteHandle latchForWrite(long id) {
-        Frame frame = pool.acquire(id); // pin held → frame cannot be repurposed → identity stable
-        frame.treeLatch().lock();
-        return new PinnedWriteHandle(frame);
+        return new PinnedPageWrite(frame, shadow);
     }
 
     @Override
@@ -99,6 +111,16 @@ public class NodeStore implements Store, Closeable {
         return discStore.rootId();
     }
 
+    @Override
+    public long elementCount() {
+        return elementCount.get();
+    }
+
+    @Override
+    public void addToElementCount(long delta) {
+        elementCount.addAndGet(delta);
+    }
+
     public long highWaterMark() {
         return discStore.highWaterMark();
     }
@@ -108,44 +130,82 @@ public class NodeStore implements Store, Closeable {
         return pool;
     }
 
-    private static void writeToFrame(Node node, Frame frame) {
-        ByteBuffer serialized = PageCodec.serialize(node);
-        System.arraycopy(serialized.array(), 0, frame.bytes, 0, Store.PAGE_SIZE);
-        frame.setDirty(true);
-        frame.bumpUsage();
-    }
-
     @Override
     public void close() throws IOException {
         freeLog.flush(); // persist pending retires before anything else can be lost
         pool.close(); // flush dirty frames first
         discStore.writeEpoch(epochs.current());
+        discStore.writeCount(elementCount.get());
         discStore.close();
     }
 
-    private static final class PinnedWriteHandle implements WriteHandle {
+    private static final class PinnedPageRef implements PageRef {
         private final Frame frame;
-        private volatile boolean closed = false;
+        private boolean closed = false;
 
-        PinnedWriteHandle(Frame frame) {
+        PinnedPageRef(Frame frame) {
             this.frame = frame;
         }
 
         @Override
-        public Node get() {
-            frame.ioLock.readLock().lock();
-            try {
-                return PageCodec.deserialize(frame.pageId(), ByteBuffer.wrap(frame.bytes));
-            } finally {
-                frame.ioLock.readLock().unlock();
-            }
+        public long id() {
+            return frame.pageId();
         }
 
         @Override
-        public void set(Node node) {
+        public byte[] bytes() {
+            return frame.bytes;
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            frame.ioLock.readLock().unlock();
+            frame.unpin();
+        }
+    }
+
+    private static final class PinnedPageWrite implements PageWrite {
+        private final Frame frame;
+        private final byte[] shadow;
+        private boolean dirty = false;
+        private boolean closed = false;
+
+        PinnedPageWrite(Frame frame, byte[] shadow) {
+            this.frame = frame;
+            this.shadow = shadow;
+        }
+
+        @Override
+        public long id() {
+            return frame.pageId();
+        }
+
+        @Override
+        public byte[] bytes() {
+            return shadow;
+        }
+
+        @Override
+        public void markDirty() {
+            frame.setDirty(true);
+            frame.bumpUsage();
+            dirty = true;
+            // Publish now, not only at close: the merge path tombstones the right sibling
+            // (published by its own handle) while the absorbing left page is still latched,
+            // so the survivor's absorbed content must already be visible — otherwise a
+            // reader routing around the tombstone could read the stale survivor and miss keys.
+            publish();
+        }
+
+        /** Copies the shadow over the frame bytes; readers stall only for this arraycopy. */
+        private void publish() {
             frame.ioLock.writeLock().lock();
             try {
-                writeToFrame(node, frame);
+                System.arraycopy(shadow, 0, frame.bytes, 0, Store.PAGE_SIZE);
             } finally {
                 frame.ioLock.writeLock().unlock();
             }
@@ -157,6 +217,9 @@ public class NodeStore implements Store, Closeable {
                 return;
             }
             closed = true;
+            if (dirty) {
+                publish(); // cover any mutation after the last markDirty
+            }
             frame.treeLatch().unlock();
             frame.unpin();
         }

@@ -12,6 +12,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
@@ -68,6 +71,98 @@ class BLinkTreeIntegrationTest {
         buffer.putLong(id);
         buffer.putLong(~id);
         return new Value(buffer.array());
+    }
+
+    @Test
+    void countIsExactAcrossSplitsAndPersistsAcrossReopen() throws IOException {
+        File db = tempDir.resolve("count-reopen.db").toFile();
+        try (NodeStore store = new NodeStore(db, 64)) {
+            BLinkTree t = new BLinkTree(store);
+            assertEquals(0, t.count());
+            for (long i = 0; i < 500; i++) {
+                t.addValue(keyOf(i), valueOf(i));
+            }
+            assertEquals(500, t.count());
+            for (long i = 0; i < 500; i++) {
+                t.addValue(keyOf(i), valueOf(~i)); // replaces: count unchanged
+            }
+            assertEquals(500, t.count());
+        }
+        try (NodeStore store = new NodeStore(db, 64)) {
+            BLinkTree t = new BLinkTree(store);
+            assertEquals(500, t.count()); // restored from the file header
+            for (long i = 0; i < 400; i++) {
+                t.delete(keyOf(i));
+            }
+            assertEquals(100, t.count());
+        }
+        try (NodeStore store = new NodeStore(db, 64)) {
+            assertEquals(100, new BLinkTree(store).count());
+        }
+    }
+
+    @Test
+    void entriesScansWholeTreeInKeyOrderAcrossSplitsAndMerges() throws IOException {
+        File db = tempDir.resolve("scan.db").toFile();
+        try (NodeStore store = new NodeStore(db, 64)) {
+            BLinkTree t = new BLinkTree(store);
+            assertFalse(t.entries().hasNext()); // empty tree
+
+            for (long i = 0; i < 500; i++) { // forces leaf and root splits
+                t.addValue(keyOf(i), valueOf(i));
+            }
+            List<BLinkTree.Entry> all = new ArrayList<>();
+            t.entries().forEachRemaining(all::add);
+            assertEquals(500, all.size());
+            assertEquals(t.count(), all.size());
+            for (int i = 0; i < 500; i++) {
+                assertEquals(keyOf(i), all.get(i).key(), "key at position " + i);
+                assertEquals(valueOf(i), all.get(i).value(), "value at position " + i);
+            }
+
+            for (long i = 0; i < 400; i++) { // underfills leaves, forces merges
+                t.delete(keyOf(i));
+            }
+            List<BLinkTree.Entry> rest = new ArrayList<>();
+            t.entries().forEachRemaining(rest::add);
+            assertEquals(100, rest.size());
+            for (int i = 0; i < 100; i++) {
+                assertEquals(keyOf(400 + i), rest.get(i).key(), "key at position " + i);
+            }
+        }
+    }
+
+    @Test
+    void entriesStreamsLazilyWhileWritesContinue() throws IOException {
+        File db = tempDir.resolve("scan-lazy.db").toFile();
+        try (NodeStore store = new NodeStore(db, 64)) {
+            BLinkTree t = new BLinkTree(store);
+            for (long i = 0; i < 500; i++) {
+                t.addValue(keyOf(i), valueOf(i));
+            }
+
+            Iterator<BLinkTree.Entry> it = t.entries();
+            for (int i = 0; i < 10; i++) {
+                assertTrue(it.hasNext());
+                assertEquals(keyOf(i), it.next().key());
+            }
+            // Writers proceed while the iterator holds its epoch ticket. These keys land
+            // at the right end of the tree, ahead of the scan position, so the lazy scan
+            // picks them up as it reaches the tail.
+            for (long i = 500; i < 600; i++) {
+                t.addValue(keyOf(i), valueOf(i));
+            }
+
+            int seen = 10;
+            long prev = 9;
+            while (it.hasNext()) {
+                long k = ByteBuffer.wrap(it.next().key().bytes()).getLong();
+                assertEquals(prev + 1, k, "scan must stay strictly ascending, no duplicates");
+                prev = k;
+                seen++;
+            }
+            assertEquals(600, seen);
+        }
     }
 
     @ParameterizedTest
@@ -331,6 +426,10 @@ class BLinkTreeIntegrationTest {
         ExecutorService executor = Executors.newFixedThreadPool(threads);
         AtomicInteger errors = new AtomicInteger();
         CountDownLatch done = new CountDownLatch(threads);
+        Object[] keyStripes = new Object[64];
+        for (int i = 0; i < keyStripes.length; i++) {
+            keyStripes[i] = new Object();
+        }
         try {
             for (int t = 0; t < threads; t++) {
                 int threadId = t;
@@ -339,12 +438,16 @@ class BLinkTreeIntegrationTest {
                         Random rnd = new Random(5_000L + threadId);
                         for (int op = 0; op < insertsPerThread; op++) {
                             long k = rnd.nextLong(keySpace);
-                            if (rnd.nextBoolean()) {
-                                tree.addValue(keyOf(k), valueOf(k));
-                                present.put(k, valueOf(k));
-                            } else {
-                                tree.delete(keyOf(k));
-                                present.remove(k);
+                            // stripe-serialize the tree op + model update so the model
+                            // cannot invert two concurrent ops on the same key
+                            synchronized (keyStripes[(int) (k % keyStripes.length)]) {
+                                if (rnd.nextBoolean()) {
+                                    tree.addValue(keyOf(k), valueOf(k));
+                                    present.put(k, valueOf(k));
+                                } else {
+                                    tree.delete(keyOf(k));
+                                    present.remove(k);
+                                }
                             }
                             // strong invariant: a key's value, when present, is always valueOf(k)
                             Value got = tree.get(keyOf(k));

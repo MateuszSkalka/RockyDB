@@ -7,6 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -33,9 +34,12 @@ public class Database implements Closeable {
                 throw new IllegalStateException("Table already exists: " + name);
             }
             long rootId = store.allocate();
-            store.writeNode(new LeafNode(rootId, 1, new Value[]{}, new Value[]{}, -1L, Value.infinity(), false));
-            catalog.addValue(nameKey, encodeRootId(rootId));
-            tables.put(name, new BLinkTree(store, new TableRootRef(nameKey, rootId)));
+            try (PageWrite root = store.latchForWriteBlank(rootId)) {
+                LeafPage.formatEmpty(root.bytes(), 1, Pages.NO_LINK, null);
+                root.markDirty();
+            }
+            catalog.addValue(nameKey, encodeMeta(rootId, 0));
+            tables.put(name, new BLinkTree(store, new TableRootRef(nameKey, rootId, 0)));
         } finally {
             catalogLock.unlock();
         }
@@ -69,15 +73,16 @@ public class Database implements Closeable {
                 if (!visited.add(id)) {
                     continue;
                 }
-                Node n = store.readNode(id);
-                if (!n.isLeaf() && !n.marked()) {
-                    for (long p : ((BranchNode) n).getPointers()) {
-                        stack.push(p);
+                try (PageRef ref = store.readPage(id)) {
+                    byte[] p = ref.bytes();
+                    if (!Pages.isLeaf(p) && !Pages.isMarked(p)) {
+                        for (int i = 0; i < Pages.count(p); i++) {
+                            stack.push(BranchPage.childAt(p, i));
+                        }
                     }
-                }
-
-                if (n.link() != -1) {
-                    stack.push(n.link());
+                    if (Pages.link(p) != Pages.NO_LINK) {
+                        stack.push(Pages.link(p));
+                    }
                 }
                 store.retire(id);
             }
@@ -96,6 +101,11 @@ public class Database implements Closeable {
 
     public void delete(String table, Value key) {
         resolve(table).delete(key);
+    }
+
+    /** Exact number of key/value pairs in the table. O(1), cached — no scan. */
+    public long count(String table) {
+        return resolve(table).count();
     }
 
     public boolean tableExists(String name) {
@@ -130,7 +140,7 @@ public class Database implements Closeable {
             if (rootVal == null) {
                 throw new IllegalStateException("No such table: " + table);
             }
-            BLinkTree tree = new BLinkTree(store, new TableRootRef(nameKey, decodeRootId(rootVal)));
+            BLinkTree tree = new BLinkTree(store, new TableRootRef(nameKey, decodeRootId(rootVal), decodeCount(rootVal)));
             tables.put(table, tree);
             return tree;
         } finally {
@@ -140,6 +150,11 @@ public class Database implements Closeable {
 
     @Override
     public void close() throws IOException {
+        // Persist each open table's cached count next to its root id in the catalog.
+        // Runs before store.close() so the catalog pages flush with everything else.
+        for (Map.Entry<String, BLinkTree> e : tables.entrySet()) {
+            catalog.addValue(nameKey(e.getKey()), encodeMeta(rootPageIdOf(e.getKey()), e.getValue().count()));
+        }
         store.close();
     }
 
@@ -147,9 +162,11 @@ public class Database implements Closeable {
         return new Value(name.getBytes(StandardCharsets.UTF_8));
     }
 
-    private static Value encodeRootId(long id) {
-        ByteBuffer b = ByteBuffer.allocate(Long.BYTES);
-        b.putLong(id);
+    /** Catalog entry: 16 bytes = root page id + cached element count. */
+    private static Value encodeMeta(long rootId, long count) {
+        ByteBuffer b = ByteBuffer.allocate(2 * Long.BYTES);
+        b.putLong(rootId);
+        b.putLong(count);
         return new Value(b.array());
     }
 
@@ -157,13 +174,19 @@ public class Database implements Closeable {
         return ByteBuffer.wrap(v.bytes()).getLong();
     }
 
+    private static long decodeCount(Value v) {
+        return ByteBuffer.wrap(v.bytes()).getLong(Long.BYTES);
+    }
+
     private final class TableRootRef implements RootRef {
         private final Value nameKey;
         private final AtomicLong rootId;
+        private final AtomicLong count;
 
-        TableRootRef(Value nameKey, long initialRootId) {
+        TableRootRef(Value nameKey, long initialRootId, long initialCount) {
             this.nameKey = nameKey;
             this.rootId = new AtomicLong(initialRootId);
+            this.count = new AtomicLong(initialCount);
         }
 
         @Override
@@ -174,7 +197,17 @@ public class Database implements Closeable {
         @Override
         public void set(long id) {
             rootId.set(id);
-            catalog.addValue(nameKey, encodeRootId(id));
+            catalog.addValue(nameKey, encodeMeta(id, count.get()));
+        }
+
+        @Override
+        public long count() {
+            return count.get();
+        }
+
+        @Override
+        public void addToCount(long delta) {
+            count.addAndGet(delta);
         }
     }
 }

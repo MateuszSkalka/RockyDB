@@ -4,8 +4,10 @@ import java.util.Arrays;
 import java.util.Objects;
 
 public record Value(byte[] bytes) implements Comparable<Value> {
+    private static final Value INFINITY = new Value(null); // null bytes → immutable, shareable
+
     public static Value infinity() {
-        return new Value(null);
+        return INFINITY;
     }
 
     public boolean isInfinite() {

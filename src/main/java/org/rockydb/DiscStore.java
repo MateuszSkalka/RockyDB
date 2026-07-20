@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class DiscStore implements AutoCloseable {
@@ -12,6 +13,7 @@ public final class DiscStore implements AutoCloseable {
     private static final long FREE_LOG_HEAD_FILE_POSITION = 8;   // 8 bytes: packed (headPageId, headSlot)
     private static final long EPOCH_FILE_POSITION = 16;          // 8 bytes: persisted epoch counter
     private static final long FREE_LOG_TAIL_FILE_POSITION = 24;  // 8 bytes: packed (tailPageId, tailCount)
+    private static final long COUNT_FILE_POSITION = 32;          // 8 bytes: element count of the header-rooted tree
 
     private final RandomAccessFile raf;
     private final FileChannel fileChannel;
@@ -54,21 +56,53 @@ public final class DiscStore implements AutoCloseable {
         writeLong(EPOCH_FILE_POSITION, epoch);
     }
 
+    long loadCount() {
+        return Math.max(0, readLongUnchecked(COUNT_FILE_POSITION));
+    }
+
+    void writeCount(long count) {
+        writeLong(COUNT_FILE_POSITION, count);
+    }
+
     ByteBuffer readRawPage(long id) {
         ByteBuffer buffer = ByteBuffer.wrap(new byte[Store.PAGE_SIZE]);
-        try {
-            fileChannel.read(buffer, id * Store.PAGE_SIZE);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+        readFully(id * Store.PAGE_SIZE, buffer);
         buffer.rewind();
         return buffer;
     }
 
+    /** Reads the page straight into {@code dst} — no temp buffer, no copy. */
+    void readRawPage(long id, byte[] dst) {
+        ByteBuffer buffer = ByteBuffer.wrap(dst);
+        readFully(id * Store.PAGE_SIZE, buffer);
+    }
+
+    /**
+     * Positional reads are not guaranteed to fill the buffer in one call; loop.
+     * A short read at EOF (page never written) reads back as zeros.
+     */
+    private void readFully(long position, ByteBuffer buffer) {
+        try {
+            while (buffer.hasRemaining()) {
+                int n = fileChannel.read(buffer, position + buffer.position());
+                if (n < 0) {
+                    Arrays.fill(buffer.array(), buffer.position(), buffer.capacity(), (byte) 0);
+                    buffer.position(buffer.capacity());
+                    break;
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     void writeRawPage(long id, ByteBuffer buffer) {
         buffer.rewind();
+        long position = Store.PAGE_SIZE * id;
         try {
-            fileChannel.write(buffer, Store.PAGE_SIZE * id);
+            while (buffer.hasRemaining()) {
+                fileChannel.write(buffer, position + buffer.position());
+            }
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
