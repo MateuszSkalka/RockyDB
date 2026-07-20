@@ -21,8 +21,8 @@ class NodeStoreTest {
     private File dbFile;
     private NodeStore store;
 
-    private static Value v(String s) {
-        return new Value(s.getBytes());
+    private static byte[] v(String s) {
+        return s.getBytes();
     }
 
     @BeforeEach
@@ -59,14 +59,14 @@ class NodeStoreTest {
         long rootId = store.rootId();
 
         try (PageWrite w = store.latchForWrite(rootId)) {
-            LeafPage.put(w.bytes(), v("a").bytes(), v("1").bytes());
-            LeafPage.put(w.bytes(), v("c").bytes(), v("3").bytes());
+            LeafPage.put(w.bytes(), v("a"), v("1"));
+            LeafPage.put(w.bytes(), v("c"), v("3"));
             w.markDirty();
         }
 
         try (PageRef ref = store.readPage(rootId)) {
-            assertEquals(v("1"), LeafPage.getValue(ref.bytes(), v("a").bytes()));
-            assertEquals(v("3"), LeafPage.getValue(ref.bytes(), v("c").bytes()));
+            assertArrayEquals(v("1"), LeafPage.getValue(ref.bytes(), v("a")));
+            assertArrayEquals(v("3"), LeafPage.getValue(ref.bytes(), v("c")));
         }
     }
 
@@ -77,12 +77,12 @@ class NodeStoreTest {
 
         try (PageWrite w = store.latchForWriteBlank(blankId)) {
             LeafPage.formatEmpty(w.bytes(), 1, Pages.NO_LINK, null);
-            LeafPage.put(w.bytes(), v("fresh").bytes(), v("page").bytes());
+            LeafPage.put(w.bytes(), v("fresh"), v("page"));
             w.markDirty();
         }
 
         try (PageRef ref = store.readPage(blankId)) {
-            assertEquals(v("page"), LeafPage.getValue(ref.bytes(), v("fresh").bytes()));
+            assertArrayEquals(v("page"), LeafPage.getValue(ref.bytes(), v("fresh")));
         }
     }
 
@@ -103,23 +103,23 @@ class NodeStoreTest {
         store = new NodeStore(dbFile, 16);
         long rootId = store.rootId();
         try (PageWrite w = store.latchForWrite(rootId)) {
-            LeafPage.put(w.bytes(), v("a").bytes(), v("1").bytes());
+            LeafPage.put(w.bytes(), v("a"), v("1"));
             w.markDirty();
         }
 
         PageWrite w = store.latchForWrite(rootId);
-        LeafPage.put(w.bytes(), v("b").bytes(), v("2").bytes());
+        LeafPage.put(w.bytes(), v("b"), v("2"));
         ExecutorService exec = Executors.newSingleThreadExecutor();
         try {
-            Future<Value[]> read = exec.submit(() -> {
+            Future<byte[][]> read = exec.submit(() -> {
                 try (PageRef ref = store.readPage(rootId)) {
-                    return new Value[]{
-                            LeafPage.getValue(ref.bytes(), v("a").bytes()),
-                            LeafPage.getValue(ref.bytes(), v("b").bytes())};
+                    return new byte[][]{
+                            LeafPage.getValue(ref.bytes(), v("a")),
+                            LeafPage.getValue(ref.bytes(), v("b"))};
                 }
             });
-            Value[] seen = read.get(5, TimeUnit.SECONDS);
-            assertEquals(v("1"), seen[0]);
+            byte[][] seen = read.get(5, TimeUnit.SECONDS);
+            assertArrayEquals(v("1"), seen[0]);
             assertNull(seen[1], "unpublished shadow mutation leaked to a reader");
         } finally {
             exec.shutdown();
@@ -133,11 +133,11 @@ class NodeStoreTest {
         long rootId = store.rootId();
 
         PageWrite w = store.latchForWrite(rootId);
-        LeafPage.put(w.bytes(), v("k").bytes(), v("v").bytes());
+        LeafPage.put(w.bytes(), v("k"), v("v"));
         w.markDirty();
 
         try (PageRef ref = store.readPage(rootId)) { // same thread: write lock not held mid-window
-            assertEquals(v("v"), LeafPage.getValue(ref.bytes(), v("k").bytes()));
+            assertArrayEquals(v("v"), LeafPage.getValue(ref.bytes(), v("k")));
         }
         w.close();
     }
@@ -147,18 +147,18 @@ class NodeStoreTest {
         store = new NodeStore(dbFile, 8);
         BLinkTree tree = new BLinkTree(store);
         byte[] bigValue = new byte[4000];
-        List<Value> keys = new ArrayList<>();
+        List<byte[]> keys = new ArrayList<>();
         int count = 150;
 
         for (int i = 0; i < count; i++) {
-            Value key = v("key" + i);
+            byte[] key = v("key" + i);
             keys.add(key);
-            tree.addValue(key, new Value(bigValue));
+            tree.addValue(key, bigValue);
         }
 
         assertTrue(store.pool().getEvictions() > 0);
         for (int i = 0; i < count; i++) {
-            assertEquals(new Value(bigValue), tree.get(keys.get(i)), "wrong value for key " + i);
+            assertArrayEquals(bigValue, tree.get(keys.get(i)), "wrong value for key " + i);
         }
     }
 
@@ -173,7 +173,7 @@ class NodeStoreTest {
         NodeStore reopened = new NodeStore(dbFile, 16);
         try {
             BLinkTree reopenedTree = new BLinkTree(reopened);
-            assertEquals(v("yes"), reopenedTree.get(v("persistent")));
+            assertArrayEquals(v("yes"), reopenedTree.get(v("persistent")));
         } finally {
             reopened.close();
         }
@@ -201,7 +201,7 @@ class NodeStoreTest {
         tree.delete(v("a"));
 
         assertNull(tree.get(v("a")));
-        assertEquals(v("2"), tree.get(v("b")));
+        assertArrayEquals(v("2"), tree.get(v("b")));
     }
 
     @Test
@@ -212,7 +212,7 @@ class NodeStoreTest {
 
         tree.delete(v("missing"));
 
-        assertEquals(v("1"), tree.get(v("a")));
+        assertArrayEquals(v("1"), tree.get(v("a")));
         assertNull(tree.get(v("missing")));
     }
 
@@ -227,14 +227,14 @@ class NodeStoreTest {
 
         tree.addValue(v("a"), v("2"));
 
-        assertEquals(v("2"), tree.get(v("a")));
+        assertArrayEquals(v("2"), tree.get(v("a")));
     }
 
     @Test
     void deleteAcrossSplitsLeavesRemainingKeysCorrect() throws Exception {
         store = new NodeStore(dbFile, 64);
         BLinkTree tree = new BLinkTree(store);
-        Value bigValue = new Value(new byte[200]);
+        byte[] bigValue = new byte[200];
         int count = 400;
 
         for (int i = 0; i < count; i++) {
@@ -249,7 +249,7 @@ class NodeStoreTest {
             if (i % 2 == 0) {
                 assertNull(tree.get(v("key" + i)), "deleted key " + i + " still present");
             } else {
-                assertEquals(bigValue, tree.get(v("key" + i)), "wrong value for key " + i);
+                assertArrayEquals(bigValue, tree.get(v("key" + i)), "wrong value for key " + i);
             }
         }
     }
@@ -258,7 +258,7 @@ class NodeStoreTest {
     void concurrentInsertsAndDeletesStayConsistent() throws Exception {
         store = new NodeStore(dbFile, 128);
         BLinkTree tree = new BLinkTree(store);
-        Value bigValue = new Value(new byte[200]);
+        byte[] bigValue = new byte[200];
         int keyCount = 500;
         int threads = 8;
 
@@ -296,7 +296,7 @@ class NodeStoreTest {
             if (i % 2 == 0) {
                 assertNull(tree.get(v("key" + i)), "deleted key " + i + " still present");
             } else {
-                assertEquals(bigValue, tree.get(v("key" + i)), "wrong value for key " + i);
+                assertArrayEquals(bigValue, tree.get(v("key" + i)), "wrong value for key " + i);
             }
         }
     }

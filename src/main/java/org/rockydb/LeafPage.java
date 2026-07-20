@@ -41,7 +41,7 @@ final class LeafPage {
         return Pages.find(p, key);
     }
 
-    static Value getValue(byte[] p, byte[] key) {
+    static byte[] getValue(byte[] p, byte[] key) {
         int idx = find(p, key);
         if (idx < 0) {
             return null;
@@ -49,17 +49,17 @@ final class LeafPage {
         return valueAt(p, idx);
     }
 
-    static Value keyAt(byte[] p, int idx) {
-        return new Value(keyBytesAt(p, idx));
+    static byte[] keyAt(byte[] p, int idx) {
+        return keyBytesAt(p, idx);
     }
 
-    static Value valueAt(byte[] p, int idx) {
+    static byte[] valueAt(byte[] p, int idx) {
         int off = Pages.keyOff(p, idx);
         int klen = Pages.keyLen(p, idx);
         int vlen = Pages.i32(p, off + klen);
         byte[] v = new byte[vlen];
         System.arraycopy(p, off + klen + Integer.BYTES, v, 0, vlen);
-        return new Value(v);
+        return v;
     }
 
     static byte[] keyBytesAt(byte[] p, int idx) {
@@ -171,7 +171,7 @@ final class LeafPage {
                 }
             }
             keys[m] = k;
-            vals[m++] = valueAt(left, i).bytes();
+            vals[m++] = valueAt(left, i);
         }
         if (pending) {
             keys[m] = key;

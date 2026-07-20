@@ -44,9 +44,9 @@ Build/test: `./gradlew build`, `./gradlew test`. Tests: JUnit 6 + Mockito, one t
 - `Pages` / `LeafPage` / `BranchPage` — static operations **directly on the page `byte[]`**:
   binary search over the slot array, in-place insert/remove, compaction, byte-balanced
   splits, merges, tombstones. There are no node objects: tree code never deserializes a
-  page; a `Value` is materialized only at the API boundary (a `get` hit, an emitted
-  `entries()` entry). `Value` — `byte[]` wrapper, unsigned
-  lexicographic order; `Value.infinity()` (null bytes) is the +∞ fence sentinel.
+  page; a raw `byte[]` key/value is materialized only at the API boundary (a `get` hit,
+  an emitted `entries()` entry). Keys/values are raw `byte[]` everywhere, unsigned
+  lexicographic order; a null `byte[]` is the +∞ fence sentinel at page level.
 
 ## On-disk / in-memory page format
 
@@ -135,7 +135,7 @@ raw i/o through `DiscStore` (never the pool), so it never competes with tree pag
 ## Operation flows
 
 **get(key)**: `enterOp` → read root id → `nextNode(key)` down the tree (raw binary search
-per page, right links when key > fence; zero allocation) → at the leaf, one `Value` copy
+per page, right links when key > fence; zero allocation) → at the leaf, one `byte[]` copy
 on a hit → `exitOp`. Fully latch-free at the tree level.
 
 **insert(key, value)**: `enterOp` → descend root→leaf, pushing ancestors only when following a
@@ -205,6 +205,6 @@ consistency: keys inserted behind or deleted ahead of the scan position may not 
   `acquireBlank(id)` is the same dance without the disk read, for freshly allocated pages.
 - `-1L` is the universal "none" for links/next pointers; leaf +∞ fence is the `0xFFFF`
   fenceLen sentinel, branch +∞ downlink is a 0-length key + `FLAG_INF_LAST`;
-  `Value.infinity()` (null bytes) is the API-level +∞.
+  a null `byte[]` is the page-level +∞ fence.
 - Sizing is exact from the page header (`Pages.liveBytes`/`contiguousFree`/`deadBytes`) —
   never recompute sizes by walking keys.

@@ -11,23 +11,16 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Algorithm-level tests against an in-memory Store fake holding raw page arrays.
- * Behavioral end-to-end coverage (concurrency, reopen, recycling) lives in
- * {@code BLinkTreeIntegrationTest}; page-format coverage in {@code LeafPageTest} and
- * {@code BranchPageTest}.
- */
 class BLinkTreeTest {
 
-    private static Value v(String s) {
-        return new Value(s.getBytes(StandardCharsets.UTF_8));
+    private static byte[] v(String s) {
+        return s.getBytes(StandardCharsets.UTF_8);
     }
 
     private static byte[] b(String s) {
         return s.getBytes(StandardCharsets.UTF_8);
     }
 
-    /** In-memory Store: handles alias the stored page array, exactly like pool frames. */
     private static final class FakeStore implements Store {
         final Map<Long, byte[]> pages = new HashMap<>();
         private long nextId;
@@ -107,7 +100,6 @@ class BLinkTreeTest {
 
         @Override
         public void retire(long pageId) {
-            // tombstones stay readable; nothing to do in memory
         }
 
         @Override
@@ -135,7 +127,6 @@ class BLinkTreeTest {
         }
     }
 
-    /** Inserts until the root is a branch with exactly {@code children} downlinks. */
     private static int fillUntilRootIsBranch(FakeStore store, BLinkTree tree, int children) {
         int i = 0;
         while (Pages.isLeaf(store.page(store.rootId()))
@@ -154,10 +145,10 @@ class BLinkTreeTest {
 
         tree.addValue(v("a"), v("1"));
         tree.addValue(v("b"), v("2"));
-        tree.addValue(v("a"), v("3")); // replace
+        tree.addValue(v("a"), v("3"));
 
-        assertEquals(v("3"), tree.get(v("a")));
-        assertEquals(v("2"), tree.get(v("b")));
+        assertArrayEquals(v("3"), tree.get(v("a")));
+        assertArrayEquals(v("2"), tree.get(v("b")));
         assertNull(tree.get(v("c")));
         assertEquals(2, tree.count());
     }
@@ -174,7 +165,7 @@ class BLinkTreeTest {
         assertEquals(2, Pages.count(root));
         assertEquals(2, Pages.height(root));
         for (int i = 0; i < n; i++) {
-            assertEquals(v("value-%05d".formatted(i)), tree.get(v("k%05d".formatted(i))));
+            assertArrayEquals(v("value-%05d".formatted(i)), tree.get(v("k%05d".formatted(i))));
         }
         assertEquals(n, tree.count());
     }
@@ -185,7 +176,6 @@ class BLinkTreeTest {
         BLinkTree tree = new BLinkTree(store);
         fillUntilRootIsBranch(store, tree, 2);
 
-        // the right child of the fresh root carries the ∞ fence; split it again
         int i = 0;
         while (Pages.count(store.page(store.rootId())) != 3) {
             tree.addValue(v("z%05d".formatted(i)), v("w"));
@@ -195,10 +185,10 @@ class BLinkTreeTest {
 
         byte[] root = store.page(store.rootId());
         assertEquals(3, Pages.count(root));
-        assertNull(BranchPage.biggestKeyBytes(root)); // last downlink still ∞
+        assertNull(BranchPage.biggestKeyBytes(root));
         assertTrue((root[Pages.FLAGS] & Pages.FLAG_INF_LAST) != 0);
         for (int j = 0; j < i; j++) {
-            assertEquals(v("w"), tree.get(v("z%05d".formatted(j))));
+            assertArrayEquals(v("w"), tree.get(v("z%05d".formatted(j))));
         }
     }
 
@@ -206,7 +196,7 @@ class BLinkTreeTest {
     void splitsCascadeToHeightThree() {
         FakeStore store = FakeStore.withEmptyLeafRoot();
         BLinkTree tree = new BLinkTree(store);
-        Value big = v("x".repeat(200));
+        byte[] big = v("x".repeat(200));
 
         int n = 0;
         while (Pages.height(store.page(store.rootId())) < 3 && n < 100_000) {
@@ -216,7 +206,7 @@ class BLinkTreeTest {
 
         assertEquals(3, Pages.height(store.page(store.rootId())));
         for (int i = 0; i < n; i++) {
-            assertEquals(big, tree.get(v("k%06d".formatted(i))));
+            assertArrayEquals(big, tree.get(v("k%06d".formatted(i))));
         }
         assertEquals(n, tree.count());
     }
@@ -229,7 +219,7 @@ class BLinkTreeTest {
 
         tree.delete(v("missing"));
 
-        assertEquals(v("1"), tree.get(v("a")));
+        assertArrayEquals(v("1"), tree.get(v("a")));
         assertEquals(1, tree.count());
     }
 
@@ -245,7 +235,6 @@ class BLinkTreeTest {
         byte[] left = store.page(leftId);
         byte[] right = store.page(rightId);
 
-        // keys belonging to the left leaf (everything up to its fence)
         byte[] leftFence = LeafPage.fenceBytes(left);
         List<String> leftKeys = new ArrayList<>();
         for (int i = 0; i < n; i++) {
@@ -254,7 +243,6 @@ class BLinkTreeTest {
                 leftKeys.add(k);
             }
         }
-        // underfill the left leaf: it then absorbs the right one
         int kept = Math.max(1, leftKeys.size() / 10);
         for (int i = kept; i < leftKeys.size(); i++) {
             tree.delete(v(leftKeys.get(i)));
@@ -265,12 +253,12 @@ class BLinkTreeTest {
         assertTrue(Pages.isLeaf(store.page(store.rootId())), "root should collapse to the merged leaf");
 
         for (int i = 0; i < kept; i++) {
-            assertEquals(v("value-" + leftKeys.get(i).substring(1)), tree.get(v(leftKeys.get(i))));
+            assertArrayEquals(v("value-" + leftKeys.get(i).substring(1)), tree.get(v(leftKeys.get(i))));
         }
         for (int i = 0; i < n; i++) {
             String k = "k%05d".formatted(i);
             if (java.util.Arrays.compareUnsigned(b(k), leftFence) > 0) {
-                assertEquals(v("value-%05d".formatted(i)), tree.get(v(k)), "right-half key lost: " + k);
+                assertArrayEquals(v("value-%05d".formatted(i)), tree.get(v(k)), "right-half key lost: " + k);
             }
         }
         assertEquals(kept + (n - leftKeys.size()), tree.count());
@@ -281,17 +269,15 @@ class BLinkTreeTest {
         FakeStore store = FakeStore.withEmptyLeafRoot();
         BLinkTree tree = new BLinkTree(store);
 
-        // white-box layout: root branch -> left leaf (underfilled but ~26% live), right
-        // leaf (~80% live): combined > one page, so no merge may happen
         long leftId = store.allocate();
         byte[] left = new byte[Store.PAGE_SIZE];
         store.pages.put(leftId, left);
         LeafPage.formatEmpty(left, 1, -1L, b("m"));
-        LeafPage.put(left, b("a"), v("1").bytes());
-        LeafPage.put(left, b("b"), v("2").bytes());
+        LeafPage.put(left, b("a"), v("1"));
+        LeafPage.put(left, b("b"), v("2"));
         int fillers = 0;
         while (Pages.liveBytes(left) < Pages.MAX_BODY * 26 / 100) {
-            LeafPage.put(left, b("k%04d".formatted(fillers)), v("w%04d".formatted(fillers)).bytes());
+            LeafPage.put(left, b("k%04d".formatted(fillers)), v("w%04d".formatted(fillers)));
             fillers++;
         }
         assertTrue(Pages.needsMerge(left), "left should be underfilled (< 30%)");
@@ -302,7 +288,7 @@ class BLinkTreeTest {
         LeafPage.formatEmpty(right, 1, Pages.NO_LINK, null);
         int i = 0;
         while (Pages.liveBytes(right) < Pages.MAX_BODY * 8 / 10) {
-            LeafPage.put(right, b("z%05d".formatted(i)), v("w%05d".formatted(i)).bytes());
+            LeafPage.put(right, b("z%05d".formatted(i)), v("w%05d".formatted(i)));
             i++;
         }
 
@@ -312,19 +298,19 @@ class BLinkTreeTest {
         store.pages.put(rootId, root);
         BranchPage.formatEmpty(root, 2, Pages.NO_LINK);
         BranchPage.insert(root, b("m"), leftId);
-        BranchPage.insert(root, null, rightId); // ∞ downlink
+        BranchPage.insert(root, null, rightId);
         store.updateRootId(rootId);
         store.addToElementCount(2 + fillers + i);
 
         tree.delete(v("a"));
 
         assertFalse(Pages.isMarked(right), "sibling too big: no merge may happen");
-        assertEquals(v("2"), tree.get(v("b")));
+        assertArrayEquals(v("2"), tree.get(v("b")));
         for (int f = 0; f < fillers; f++) {
-            assertEquals(v("w%04d".formatted(f)), tree.get(v("k%04d".formatted(f))));
+            assertArrayEquals(v("w%04d".formatted(f)), tree.get(v("k%04d".formatted(f))));
         }
         for (int j = 0; j < i; j++) {
-            assertEquals(v("w%05d".formatted(j)), tree.get(v("z%05d".formatted(j))));
+            assertArrayEquals(v("w%05d".formatted(j)), tree.get(v("z%05d".formatted(j))));
         }
         assertEquals(1 + fillers + i, tree.count());
     }
@@ -334,17 +320,15 @@ class BLinkTreeTest {
         FakeStore store = FakeStore.withEmptyLeafRoot();
         BLinkTree tree = new BLinkTree(store);
 
-        // white-box: two leaves; leaf1 tombstoned into leaf2 (the survivor), exactly what
-        // a merge leaves behind for readers that still hold the retired page id
         long leaf1Id = store.allocate();
         long leaf2Id = store.allocate();
         byte[] leaf2 = new byte[Store.PAGE_SIZE];
         store.pages.put(leaf2Id, leaf2);
         LeafPage.formatEmpty(leaf2, 1, Pages.NO_LINK, null);
-        LeafPage.put(leaf2, b("a"), v("1").bytes()); // absorbed from leaf1
-        LeafPage.put(leaf2, b("b"), v("2").bytes()); // absorbed from leaf1
-        LeafPage.put(leaf2, b("m"), v("13").bytes());
-        LeafPage.put(leaf2, b("z"), v("26").bytes());
+        LeafPage.put(leaf2, b("a"), v("1"));
+        LeafPage.put(leaf2, b("b"), v("2"));
+        LeafPage.put(leaf2, b("m"), v("13"));
+        LeafPage.put(leaf2, b("z"), v("26"));
         byte[] leaf1 = new byte[Store.PAGE_SIZE];
         store.pages.put(leaf1Id, leaf1);
         LeafPage.formatTombstone(leaf1, 1, leaf2Id);
@@ -353,14 +337,14 @@ class BLinkTreeTest {
         byte[] root = new byte[Store.PAGE_SIZE];
         store.pages.put(rootId, root);
         BranchPage.formatEmpty(root, 2, Pages.NO_LINK);
-        BranchPage.insert(root, b("m"), leaf1Id); // stale downlink to the retired page
+        BranchPage.insert(root, b("m"), leaf1Id);
         BranchPage.insert(root, null, leaf2Id);
         store.updateRootId(rootId);
 
-        assertEquals(v("1"), tree.get(v("a"))); // descends to leaf1 → tombstone → survivor
-        assertEquals(v("2"), tree.get(v("b")));
-        assertEquals(v("13"), tree.get(v("m")));
-        assertEquals(v("26"), tree.get(v("z")));
+        assertArrayEquals(v("1"), tree.get(v("a")));
+        assertArrayEquals(v("2"), tree.get(v("b")));
+        assertArrayEquals(v("13"), tree.get(v("m")));
+        assertArrayEquals(v("26"), tree.get(v("z")));
         assertNull(tree.get(v("c")));
     }
 
@@ -389,12 +373,12 @@ class BLinkTreeTest {
         String prev = null;
         while (it.hasNext()) {
             BLinkTree.Entry e = it.next();
-            String k = new String(e.key().bytes(), StandardCharsets.UTF_8);
+            String k = new String(e.key(), StandardCharsets.UTF_8);
             if (prev != null) {
                 assertTrue(prev.compareTo(k) < 0, "out of order: " + prev + " then " + k);
             }
             prev = k;
-            assertEquals("v" + k.substring(1), new String(e.value().bytes(), StandardCharsets.UTF_8));
+            assertEquals("v" + k.substring(1), new String(e.value(), StandardCharsets.UTF_8));
             seen++;
         }
         assertEquals(n, seen);
@@ -428,15 +412,14 @@ class BLinkTreeTest {
 
         Iterator<BLinkTree.Entry> it = tree.entries();
         for (int i = 0; i < 10; i++) {
-            it.next(); // scan position at k000009
+            it.next();
         }
-        // split leaves ahead of the scan position
         for (int i = n; i < n + 500; i++) {
             tree.addValue(v("k%06d".formatted(i)), v("v%06d".formatted(i)));
         }
 
         List<String> seen = new ArrayList<>();
-        it.forEachRemaining(e -> seen.add(new String(e.key().bytes(), StandardCharsets.UTF_8)));
+        it.forEachRemaining(e -> seen.add(new String(e.key(), StandardCharsets.UTF_8)));
         assertEquals(n + 500 - 10, seen.size(), "stable entries missed or duplicated");
         for (int i = 1; i < seen.size(); i++) {
             assertTrue(seen.get(i - 1).compareTo(seen.get(i)) < 0, "duplicates or disorder");
@@ -467,7 +450,7 @@ class BLinkTreeTest {
             if (deleted) {
                 assertNull(tree.get(v("k%06d".formatted(i))));
             } else {
-                assertEquals(i % 2 == 0 ? v("replaced") : v("v"), tree.get(v("k%06d".formatted(i))));
+                assertArrayEquals(i % 2 == 0 ? v("replaced") : v("v"), tree.get(v("k%06d".formatted(i))));
             }
         }
     }

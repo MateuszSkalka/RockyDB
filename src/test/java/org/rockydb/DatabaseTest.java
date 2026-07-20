@@ -19,8 +19,8 @@ class DatabaseTest {
     @TempDir
     Path tempDir;
 
-    private static Value v(String s) {
-        return new Value(s.getBytes());
+    private static byte[] v(String s) {
+        return s.getBytes();
     }
 
     private File newFile() {
@@ -34,8 +34,8 @@ class DatabaseTest {
             db.insert("users", v("alice"), v("1"));
             db.insert("users", v("bob"), v("2"));
 
-            assertEquals(v("1"), db.get("users", v("alice")));
-            assertEquals(v("2"), db.get("users", v("bob")));
+            assertArrayEquals(v("1"), db.get("users", v("alice")));
+            assertArrayEquals(v("2"), db.get("users", v("bob")));
             assertNull(db.get("users", v("carol")));
         }
     }
@@ -48,8 +48,8 @@ class DatabaseTest {
             db.insert("a", v("shared"), v("from-a"));
             db.insert("b", v("shared"), v("from-b"));
 
-            assertEquals(v("from-a"), db.get("a", v("shared")));
-            assertEquals(v("from-b"), db.get("b", v("shared")));
+            assertArrayEquals(v("from-a"), db.get("a", v("shared")));
+            assertArrayEquals(v("from-b"), db.get("b", v("shared")));
         }
     }
 
@@ -101,7 +101,7 @@ class DatabaseTest {
         try (Database db = new Database(file, 32)) {
             assertTrue(db.tableExists("t"));
             for (int i = 0; i < 50; i++) {
-                assertEquals(v("val" + i), db.get("t", v("k" + i)), "missing key " + i);
+                assertArrayEquals(v("val" + i), db.get("t", v("k" + i)), "missing key " + i);
             }
             assertThrows(IllegalStateException.class, () -> db.createTable("t"));
         }
@@ -110,7 +110,7 @@ class DatabaseTest {
     @Test
     void tableRootSplitPersistsAcrossReopen() throws Exception {
         File file = newFile();
-        Value big = new Value(new byte[200]);
+        byte[] big = new byte[200];
         long beforeSplit;
         long afterSplit;
         long afterReopen;
@@ -123,14 +123,14 @@ class DatabaseTest {
             afterSplit = db.rootPageIdOf("t");
             assertNotEquals(beforeSplit, afterSplit, "root split should have updated the catalog root id");
             for (int i = 0; i < 120; i++) {
-                assertEquals(big, db.get("t", v("k" + i)));
+                assertArrayEquals(big, db.get("t", v("k" + i)));
             }
         }
         try (Database db = new Database(file, 64)) {
             afterReopen = db.rootPageIdOf("t");
             assertEquals(afterSplit, afterReopen, "root id must persist across reopen");
             for (int i = 0; i < 120; i++) {
-                assertEquals(big, db.get("t", v("k" + i)), "missing key " + i + " after reopen");
+                assertArrayEquals(big, db.get("t", v("k" + i)), "missing key " + i + " after reopen");
             }
         }
     }
@@ -171,7 +171,7 @@ class DatabaseTest {
             for (int t = 0; t < threads; t++) {
                 String table = "t" + (t % numTables);
                 for (int i = 0; i < perThread; i++) {
-                    assertEquals(v("val"), db.get(table, v(table + ":" + t + ":" + i)),
+                    assertArrayEquals(v("val"), db.get(table, v(table + ":" + t + ":" + i)),
                             "missing key t=" + t + " i=" + i);
                 }
             }
@@ -184,7 +184,7 @@ class DatabaseTest {
         long firstTreePages;
         try (Database db = new Database(file, 64)) {
             db.createTable("t");
-            Value big = new Value(new byte[200]);
+            byte[] big = new byte[200];
             for (int i = 0; i < 120; i++) {
                 db.insert("t", v("k" + i), big);
             }
@@ -194,7 +194,7 @@ class DatabaseTest {
 
         try (Database db = new Database(file, 64)) {
             long hwmAtReopen = db.highWaterMark();
-            Value big = new Value(new byte[200]);
+            byte[] big = new byte[200];
             for (int cycle = 0; cycle < 5; cycle++) {
                 db.createTable("t");
                 for (int i = 0; i < 120; i++) {
@@ -254,7 +254,7 @@ class DatabaseTest {
 
             db.insert("users", v("alice"), v("1-updated"));
             assertEquals(2, db.count("users"));
-            assertEquals(v("1-updated"), db.get("users", v("alice")));
+            assertArrayEquals(v("1-updated"), db.get("users", v("alice")));
 
             db.delete("users", v("bob"));
             assertEquals(1, db.count("users"));
@@ -289,7 +289,7 @@ class DatabaseTest {
     @Test
     void countStaysExactThroughSplitsAndMerges() throws Exception {
         File file = newFile();
-        Value big = new Value(new byte[200]);
+        byte[] big = new byte[200];
         try (Database db = new Database(file, 64)) {
             db.createTable("t");
             for (int i = 0; i < 120; i++) {
@@ -352,18 +352,19 @@ class DatabaseTest {
         }
     }
 
-    private static Value bigKey(int id, int len) {
+    private static byte[] bigKey(int id, int len) {
         byte[] b = new byte[len];
         b[0] = (byte) 1;
         b[len - 1] = (byte) (id & 0xFF);
         b[len - 2] = (byte) ((id >> 8) & 0xFF);
-        return new Value(b);
+        return b;
     }
 
-    private static Value bigValue(int id, int len) {
+    private static byte[] bigValue(int id, int len) {
         byte[] b = new byte[len];
         b[0] = (byte) 2;
         b[len - 1] = (byte) (id & 0xFF);
-        return new Value(b);
+        b[len - 2] = (byte) ((id >> 8) & 0xFF);
+        return b;
     }
 }

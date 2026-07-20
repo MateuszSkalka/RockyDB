@@ -22,8 +22,8 @@ class LeafPageTest {
     private static TreeMap<String, String> entriesOf(byte[] p) {
         TreeMap<String, String> out = new TreeMap<>();
         for (int i = 0; i < Pages.count(p); i++) {
-            out.put(new String(LeafPage.keyAt(p, i).bytes(), StandardCharsets.UTF_8),
-                    new String(LeafPage.valueAt(p, i).bytes(), StandardCharsets.UTF_8));
+            out.put(new String(LeafPage.keyAt(p, i), StandardCharsets.UTF_8),
+                    new String(LeafPage.valueAt(p, i), StandardCharsets.UTF_8));
         }
         return out;
     }
@@ -31,7 +31,7 @@ class LeafPageTest {
     private static TreeMap<String, byte[]> entriesOfBytes(byte[] p) {
         TreeMap<String, byte[]> out = new TreeMap<>();
         for (int i = 0; i < Pages.count(p); i++) {
-            out.put(new String(LeafPage.keyBytesAt(p, i), StandardCharsets.UTF_8), LeafPage.valueAt(p, i).bytes());
+            out.put(new String(LeafPage.keyBytesAt(p, i), StandardCharsets.UTF_8), LeafPage.valueAt(p, i));
         }
         return out;
     }
@@ -50,9 +50,9 @@ class LeafPageTest {
         byte[] p = leafWith("c", "3", "a", "1", "b", "2");
 
         assertEquals(3, Pages.count(p));
-        assertEquals(new Value(b("1")), LeafPage.getValue(p, b("a")));
-        assertEquals(new Value(b("2")), LeafPage.getValue(p, b("b")));
-        assertEquals(new Value(b("3")), LeafPage.getValue(p, b("c")));
+        assertArrayEquals(b("1"), LeafPage.getValue(p, b("a")));
+        assertArrayEquals(b("2"), LeafPage.getValue(p, b("b")));
+        assertArrayEquals(b("3"), LeafPage.getValue(p, b("c")));
         assertNull(LeafPage.getValue(p, b("d")));
         assertEquals(Map.of("a", "1", "b", "2", "c", "3"), entriesOf(p));
     }
@@ -64,7 +64,7 @@ class LeafPageTest {
 
         assertEquals(LeafPage.PutResult.REPLACED, LeafPage.put(p, b("a"), b("222")));
 
-        assertEquals(new Value(b("222")), LeafPage.getValue(p, b("a")));
+        assertArrayEquals(b("222"), LeafPage.getValue(p, b("a")));
         assertEquals(1, Pages.count(p));
         assertEquals(deadBefore, Pages.deadBytes(p));
     }
@@ -76,7 +76,7 @@ class LeafPageTest {
 
         assertEquals(LeafPage.PutResult.REPLACED, LeafPage.put(p, b("a"), b("s")));
 
-        assertEquals(new Value(b("s")), LeafPage.getValue(p, b("a")));
+        assertArrayEquals(b("s"), LeafPage.getValue(p, b("a")));
         assertEquals(deadBefore + "long-value".length() - 1, Pages.deadBytes(p));
     }
 
@@ -86,7 +86,7 @@ class LeafPageTest {
 
         assertEquals(LeafPage.PutResult.REPLACED, LeafPage.put(p, b("a"), b("much-longer-value")));
 
-        assertEquals(new Value(b("much-longer-value")), LeafPage.getValue(p, b("a")));
+        assertArrayEquals(b("much-longer-value"), LeafPage.getValue(p, b("a")));
         assertEquals(Map.of("a", "much-longer-value", "b", "2", "c", "3"), entriesOf(p));
     }
 
@@ -301,8 +301,8 @@ class LeafPageTest {
             long k = ((kb[0] & 0xFF) << 8) | (kb[1] & 0xFF);
             assertTrue(k > prev, "slots must be strictly ordered");
             prev = k;
-            assertArrayEquals(expected.get(k), LeafPage.valueAt(p, i).bytes());
-            assertArrayEquals(expected.get(k), LeafPage.getValue(p, kb).bytes());
+            assertArrayEquals(expected.get(k), LeafPage.valueAt(p, i));
+            assertArrayEquals(expected.get(k), LeafPage.getValue(p, kb));
         }
     }
 

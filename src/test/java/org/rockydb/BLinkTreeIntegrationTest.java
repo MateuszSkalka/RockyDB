@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -60,17 +61,17 @@ class BLinkTreeIntegrationTest {
         }
     }
 
-    private static Value keyOf(long id) {
+    private static byte[] keyOf(long id) {
         ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES);
         buffer.putLong(id);
-        return new Value(buffer.array());
+        return buffer.array();
     }
 
-    private static Value valueOf(long id) {
+    private static byte[] valueOf(long id) {
         ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES * 2);
         buffer.putLong(id);
         buffer.putLong(~id);
-        return new Value(buffer.array());
+        return buffer.array();
     }
 
     @Test
@@ -84,13 +85,13 @@ class BLinkTreeIntegrationTest {
             }
             assertEquals(500, t.count());
             for (long i = 0; i < 500; i++) {
-                t.addValue(keyOf(i), valueOf(~i)); // replaces: count unchanged
+                t.addValue(keyOf(i), valueOf(~i));
             }
             assertEquals(500, t.count());
         }
         try (NodeStore store = new NodeStore(db, 64)) {
             BLinkTree t = new BLinkTree(store);
-            assertEquals(500, t.count()); // restored from the file header
+            assertEquals(500, t.count());
             for (long i = 0; i < 400; i++) {
                 t.delete(keyOf(i));
             }
@@ -106,9 +107,9 @@ class BLinkTreeIntegrationTest {
         File db = tempDir.resolve("scan.db").toFile();
         try (NodeStore store = new NodeStore(db, 64)) {
             BLinkTree t = new BLinkTree(store);
-            assertFalse(t.entries().hasNext()); // empty tree
+            assertFalse(t.entries().hasNext());
 
-            for (long i = 0; i < 500; i++) { // forces leaf and root splits
+            for (long i = 0; i < 500; i++) {
                 t.addValue(keyOf(i), valueOf(i));
             }
             List<BLinkTree.Entry> all = new ArrayList<>();
@@ -116,18 +117,18 @@ class BLinkTreeIntegrationTest {
             assertEquals(500, all.size());
             assertEquals(t.count(), all.size());
             for (int i = 0; i < 500; i++) {
-                assertEquals(keyOf(i), all.get(i).key(), "key at position " + i);
-                assertEquals(valueOf(i), all.get(i).value(), "value at position " + i);
+                assertArrayEquals(keyOf(i), all.get(i).key(), "key at position " + i);
+                assertArrayEquals(valueOf(i), all.get(i).value(), "value at position " + i);
             }
 
-            for (long i = 0; i < 400; i++) { // underfills leaves, forces merges
+            for (long i = 0; i < 400; i++) {
                 t.delete(keyOf(i));
             }
             List<BLinkTree.Entry> rest = new ArrayList<>();
             t.entries().forEachRemaining(rest::add);
             assertEquals(100, rest.size());
             for (int i = 0; i < 100; i++) {
-                assertEquals(keyOf(400 + i), rest.get(i).key(), "key at position " + i);
+                assertArrayEquals(keyOf(400 + i), rest.get(i).key(), "key at position " + i);
             }
         }
     }
@@ -144,11 +145,9 @@ class BLinkTreeIntegrationTest {
             Iterator<BLinkTree.Entry> it = t.entries();
             for (int i = 0; i < 10; i++) {
                 assertTrue(it.hasNext());
-                assertEquals(keyOf(i), it.next().key());
+                assertArrayEquals(keyOf(i), it.next().key());
             }
-            // Writers proceed while the iterator holds its epoch ticket. These keys land
-            // at the right end of the tree, ahead of the scan position, so the lazy scan
-            // picks them up as it reaches the tail.
+            // the lazy scan picks up keys inserted ahead of its position while it holds its epoch ticket
             for (long i = 500; i < 600; i++) {
                 t.addValue(keyOf(i), valueOf(i));
             }
@@ -156,7 +155,7 @@ class BLinkTreeIntegrationTest {
             int seen = 10;
             long prev = 9;
             while (it.hasNext()) {
-                long k = ByteBuffer.wrap(it.next().key().bytes()).getLong();
+                long k = ByteBuffer.wrap(it.next().key()).getLong();
                 assertEquals(prev + 1, k, "scan must stay strictly ascending, no duplicates");
                 prev = k;
                 seen++;
@@ -174,8 +173,8 @@ class BLinkTreeIntegrationTest {
         runWriters(threads, elementsPerThread, insertsPerThread, expected, new AtomicInteger());
 
         for (Map.Entry<Long, byte[]> entry : expected.entrySet()) {
-            Value got = tree.get(keyOf(entry.getKey()));
-            assertEquals(new Value(entry.getValue()), got, "wrong value for key " + entry.getKey());
+            byte[] got = tree.get(keyOf(entry.getKey()));
+            assertArrayEquals(entry.getValue(), got, "wrong value for key " + entry.getKey());
         }
     }
 
@@ -211,8 +210,8 @@ class BLinkTreeIntegrationTest {
         assertEquals(0, readerErrors.get(), "readers reported errors");
 
         for (Map.Entry<Long, byte[]> entry : expected.entrySet()) {
-            Value got = tree.get(keyOf(entry.getKey()));
-            assertEquals(new Value(entry.getValue()), got, "wrong value for key " + entry.getKey());
+            byte[] got = tree.get(keyOf(entry.getKey()));
+            assertArrayEquals(entry.getValue(), got, "wrong value for key " + entry.getKey());
         }
     }
 
@@ -240,9 +239,9 @@ class BLinkTreeIntegrationTest {
             long base = (long) threadId * PARTITION_OFFSET;
             for (int j = 0; j < insertsPerThread; j++) {
                 long keyId = base + rnd.nextLong(elementsPerThread);
-                Value value = valueOf(keyId);
+                byte[] value = valueOf(keyId);
                 tree.addValue(keyOf(keyId), value);
-                expected.put(keyId, value.bytes());
+                expected.put(keyId, value);
             }
         } catch (Exception e) {
             errors.incrementAndGet();
@@ -285,25 +284,22 @@ class BLinkTreeIntegrationTest {
             tree.delete(keyOf(i));
         }
         for (int i = deletedUpTo; i < total; i++) {
-            assertEquals(new Value(valueOf(i).bytes()), tree.get(keyOf(i)), "surviving key missing: " + i);
+            assertArrayEquals(valueOf(i), tree.get(keyOf(i)), "surviving key missing: " + i);
         }
         for (int i = 0; i < deletedUpTo; i++) {
             assertNull(tree.get(keyOf(i)), "deleted key still present: " + i);
         }
-        // re-inserting into a tombstoned/merged region must still work (descent follows redirects)
         for (int i = 0; i < 300; i++) {
             tree.addValue(keyOf(i), valueOf(i));
         }
         for (int i = 0; i < 300; i++) {
-            assertEquals(new Value(valueOf(i).bytes()), tree.get(keyOf(i)), "re-inserted key missing: " + i);
+            assertArrayEquals(valueOf(i), tree.get(keyOf(i)), "re-inserted key missing: " + i);
         }
     }
 
     @Test
     void deleteCascadesThroughInternalNodesAndStaysConsistent() throws Exception {
         openTree(1, 0, 0);
-        // Large keys+values so the tree reaches height 3 quickly and branch nodes underflow on delete,
-        // exercising the internal-node merge cascade (not just leaf merges).
         int total = 120;
         int payloadLen = 2000;
         for (int i = 0; i < total; i++) {
@@ -314,17 +310,16 @@ class BLinkTreeIntegrationTest {
             tree.delete(largeKey(i, payloadLen));
         }
         for (int i = deletedUpTo; i < total; i++) {
-            assertEquals(largeValue(i, payloadLen), tree.get(largeKey(i, payloadLen)), "surviving key missing: " + i);
+            assertArrayEquals(largeValue(i, payloadLen), tree.get(largeKey(i, payloadLen)), "surviving key missing: " + i);
         }
         for (int i = 0; i < deletedUpTo; i++) {
             assertNull(tree.get(largeKey(i, payloadLen)), "deleted key still present: " + i);
         }
-        // re-insert into tombstoned/merged regions (descent + ascent must follow redirects)
         for (int i = 0; i < deletedUpTo; i++) {
             tree.addValue(largeKey(i, payloadLen), largeValue(i, payloadLen));
         }
         for (int i = 0; i < total; i++) {
-            assertEquals(largeValue(i, payloadLen), tree.get(largeKey(i, payloadLen)), "re-inserted key missing: " + i);
+            assertArrayEquals(largeValue(i, payloadLen), tree.get(largeKey(i, payloadLen)), "re-inserted key missing: " + i);
         }
     }
 
@@ -335,8 +330,7 @@ class BLinkTreeIntegrationTest {
         int threads = 6;
         int keysPerThread = 50;
         int keySpace = threads * keysPerThread;
-        // pre-populate a deep tree (height >= 3) so deletes cascade through internal nodes
-        ConcurrentHashMap<Long, Value> present = new ConcurrentHashMap<>();
+        ConcurrentHashMap<Long, byte[]> present = new ConcurrentHashMap<>();
         for (int i = 0; i < keySpace; i++) {
             tree.addValue(largeKey(i, payloadLen), largeValue(i, payloadLen));
             present.put((long) i, largeValue(i, payloadLen));
@@ -351,11 +345,11 @@ class BLinkTreeIntegrationTest {
                 executor.submit(() -> {
                     try {
                         Random rnd = new Random(7_000L + threadId);
-                        long base = (long) threadId * keysPerThread; // disjoint keys per thread -> clean oracle
+                        long base = (long) threadId * keysPerThread;
                         for (int op = 0; op < 1500; op++) {
                             int k = (int) (base + rnd.nextLong(keysPerThread));
-                            Value key = largeKey(k, payloadLen);
-                            Value val = largeValue(k, payloadLen);
+                            byte[] key = largeKey(k, payloadLen);
+                            byte[] val = largeValue(k, payloadLen);
                             if (rnd.nextInt(3) < 2) {
                                 tree.addValue(key, val);
                                 present.put((long) k, val);
@@ -363,9 +357,8 @@ class BLinkTreeIntegrationTest {
                                 tree.delete(key);
                                 present.remove((long) k);
                             }
-                            // strong invariant: a key's value, when present, is always its deterministic value
-                            Value got = tree.get(key);
-                            if (got != null && !got.equals(val)) {
+                            byte[] got = tree.get(key);
+                            if (got != null && !Arrays.equals(got, val)) {
                                 errors.incrementAndGet();
                             }
                         }
@@ -384,32 +377,29 @@ class BLinkTreeIntegrationTest {
 
         assertEquals(0, errors.get(), "corruption/exception during concurrent large-value merges");
         for (long k = 0; k < keySpace; k++) {
-            Value got = tree.get(largeKey((int) k, payloadLen));
+            byte[] got = tree.get(largeKey((int) k, payloadLen));
             if (present.containsKey(k)) {
-                assertEquals(largeValue((int) k, payloadLen), got, "present key missing: " + k);
+                assertArrayEquals(largeValue((int) k, payloadLen), got, "present key missing: " + k);
             } else {
                 assertNull(got, "absent key still present: " + k);
             }
         }
     }
 
-
-
-
-    private static Value largeKey(int id, int len) {
+    private static byte[] largeKey(int id, int len) {
         byte[] b = new byte[len];
         b[0] = (byte) 1;
         b[len - 1] = (byte) (id & 0xFF);
         b[len - 2] = (byte) ((id >> 8) & 0xFF);
-        return new Value(b);
+        return b;
     }
 
-    private static Value largeValue(int id, int len) {
+    private static byte[] largeValue(int id, int len) {
         byte[] b = new byte[len];
         b[0] = (byte) 2;
         b[len - 1] = (byte) (id & 0xFF);
         b[len - 2] = (byte) ((id >> 8) & 0xFF);
-        return new Value(b);
+        return b;
     }
 
     @ParameterizedTest
@@ -417,7 +407,7 @@ class BLinkTreeIntegrationTest {
     void concurrentInsertsAndDeletesStayConsistent(int threads, int elementsPerThread, int insertsPerThread) throws Exception {
         openTree(threads, elementsPerThread, insertsPerThread);
         int keySpace = 1000;
-        ConcurrentHashMap<Long, Value> present = new ConcurrentHashMap<>();
+        ConcurrentHashMap<Long, byte[]> present = new ConcurrentHashMap<>();
         for (int i = 0; i < keySpace; i++) {
             tree.addValue(keyOf(i), valueOf(i));
             present.put((long) i, valueOf(i));
@@ -449,9 +439,8 @@ class BLinkTreeIntegrationTest {
                                     present.remove(k);
                                 }
                             }
-                            // strong invariant: a key's value, when present, is always valueOf(k)
-                            Value got = tree.get(keyOf(k));
-                            if (got != null && !got.equals(valueOf(k))) {
+                            byte[] got = tree.get(keyOf(k));
+                            if (got != null && !Arrays.equals(got, valueOf(k))) {
                                 errors.incrementAndGet();
                             }
                         }
@@ -470,9 +459,9 @@ class BLinkTreeIntegrationTest {
 
         assertEquals(0, errors.get(), "corruption detected during mixed insert/delete workload");
         for (long k = 0; k < keySpace; k++) {
-            Value got = tree.get(keyOf(k));
+            byte[] got = tree.get(keyOf(k));
             if (present.containsKey(k)) {
-                assertEquals(valueOf(k), got, "present key missing after shutdown: " + k);
+                assertArrayEquals(valueOf(k), got, "present key missing after shutdown: " + k);
             } else {
                 assertNull(got, "absent key still present after shutdown: " + k);
             }
@@ -484,7 +473,6 @@ class BLinkTreeIntegrationTest {
         openTree(1, 0, 0);
         int payloadLen = 1500;
         int keys = 60;
-        // Build a deep tree and remember how high the file grew to hold it.
         for (int i = 0; i < keys; i++) {
             tree.addValue(largeKey(i, payloadLen), largeValue(i, payloadLen));
         }
@@ -506,9 +494,8 @@ class BLinkTreeIntegrationTest {
                 "file grew from " + baselineHwm + " to " + finalHwm
                         + " pages; expected recycling to bound growth");
 
-        // And every key is still retrievable — recycling did not corrupt the tree.
         for (int i = 0; i < keys; i++) {
-            assertEquals(largeValue(i, payloadLen), tree.get(largeKey(i, payloadLen)),
+            assertArrayEquals(largeValue(i, payloadLen), tree.get(largeKey(i, payloadLen)),
                     "key missing after churn: " + i);
         }
     }
@@ -524,19 +511,11 @@ class BLinkTreeIntegrationTest {
                 t.addValue(largeKey(i, payloadLen), largeValue(i, payloadLen));
             }
             hwmBefore = p.highWaterMark();
-            // Delete ALL keys: forces leaf merges, branch collapses, and root collapse — each
-            // tombstoning a page that gets retired into the free-log. With everything deleted the
-            // tree shrinks to a single empty leaf, so many pages are guaranteed to be retired.
             for (int i = 0; i < 60; i++) {
                 t.delete(largeKey(i, payloadLen));
             }
-            // pool.close() flushes dirty data pages, persists the free-log pages (written via raw IO),
-            // and persists the epoch counter.
         }
 
-        // Reopen: the persisted epoch is bumped above the old current on reopen, so retired pages
-        // become immediately epoch-safe. The free-log's head/tail + page contents survived on disc,
-        // so the first allocation must recycle a retired page rather than grow the file.
         try (NodeStore p = new NodeStore(db, 64)) {
             long hwmAfter = p.highWaterMark();
             assertEquals(hwmBefore, hwmAfter, "reopen must not change the high-water mark");

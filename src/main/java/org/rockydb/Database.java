@@ -27,7 +27,7 @@ public class Database implements Closeable {
     }
 
     public void createTable(String name) {
-        Value nameKey = nameKey(name);
+        byte[] nameKey = nameKey(name);
         catalogLock.lock();
         try {
             if (catalog.get(nameKey) != null) {
@@ -46,10 +46,10 @@ public class Database implements Closeable {
     }
 
     public void dropTable(String name) {
-        Value nameKey = nameKey(name);
+        byte[] nameKey = nameKey(name);
         catalogLock.lock();
         try {
-            Value rootVal = catalog.get(nameKey);
+            byte[] rootVal = catalog.get(nameKey);
             if (rootVal == null) {
                 throw new IllegalStateException("No such table: " + name);
             }
@@ -91,15 +91,15 @@ public class Database implements Closeable {
         }
     }
 
-    public void insert(String table, Value key, Value value) {
+    public void insert(String table, byte[] key, byte[] value) {
         resolve(table).addValue(key, value);
     }
 
-    public Value get(String table, Value key) {
+    public byte[] get(String table, byte[] key) {
         return resolve(table).get(key);
     }
 
-    public void delete(String table, Value key) {
+    public void delete(String table, byte[] key) {
         resolve(table).delete(key);
     }
 
@@ -115,7 +115,7 @@ public class Database implements Closeable {
     }
 
     long rootPageIdOf(String table) {
-        Value v = catalog.get(nameKey(table));
+        byte[] v = catalog.get(nameKey(table));
         return v == null ? -1L : decodeRootId(v);
     }
 
@@ -134,8 +134,8 @@ public class Database implements Closeable {
             if (cached != null) {
                 return cached;
             }
-            Value nameKey = nameKey(table);
-            Value rootVal = catalog.get(nameKey);
+            byte[] nameKey = nameKey(table);
+            byte[] rootVal = catalog.get(nameKey);
             if (rootVal == null) {
                 throw new IllegalStateException("No such table: " + table);
             }
@@ -155,31 +155,31 @@ public class Database implements Closeable {
         store.close();
     }
 
-    private static Value nameKey(String name) {
-        return new Value(name.getBytes(StandardCharsets.UTF_8));
+    private static byte[] nameKey(String name) {
+        return name.getBytes(StandardCharsets.UTF_8);
     }
 
-    private static Value encodeMeta(long rootId, long count) {
+    private static byte[] encodeMeta(long rootId, long count) {
         ByteBuffer b = ByteBuffer.allocate(2 * Long.BYTES);
         b.putLong(rootId);
         b.putLong(count);
-        return new Value(b.array());
+        return b.array();
     }
 
-    private static long decodeRootId(Value v) {
-        return ByteBuffer.wrap(v.bytes()).getLong();
+    private static long decodeRootId(byte[] v) {
+        return ByteBuffer.wrap(v).getLong();
     }
 
-    private static long decodeCount(Value v) {
-        return ByteBuffer.wrap(v.bytes()).getLong(Long.BYTES);
+    private static long decodeCount(byte[] v) {
+        return ByteBuffer.wrap(v).getLong(Long.BYTES);
     }
 
     private final class TableRootRef implements RootRef {
-        private final Value nameKey;
+        private final byte[] nameKey;
         private final AtomicLong rootId;
         private final AtomicLong count;
 
-        TableRootRef(Value nameKey, long initialRootId, long initialCount) {
+        TableRootRef(byte[] nameKey, long initialRootId, long initialCount) {
             this.nameKey = nameKey;
             this.rootId = new AtomicLong(initialRootId);
             this.count = new AtomicLong(initialCount);

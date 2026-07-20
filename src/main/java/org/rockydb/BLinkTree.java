@@ -10,7 +10,7 @@ public class BLinkTree {
     private final Store store;
     private final RootRef rootRef;
 
-    public record Entry(Value key, Value value) {}
+    public record Entry(byte[] key, byte[] value) {}
 
     public BLinkTree(Store store) {
         this(store, new StoreBackedRootRef(store));
@@ -21,10 +21,10 @@ public class BLinkTree {
         this.rootRef = rootRef;
     }
 
-    public Value get(Value key) {
+    public byte[] get(byte[] key) {
         long ticket = store.enterOp();
         try {
-            return getUnderEpoch(key.bytes());
+            return getUnderEpoch(key);
         } finally {
             store.exitOp(ticket);
         }
@@ -63,7 +63,7 @@ public class BLinkTree {
     private final class EntryIterator implements Iterator<Entry> {
         private final long ticket;
         private long currentId;
-        private Value lastKey;
+        private byte[] lastKey;
         private byte[] snapshot = new byte[0];
         private int count;
         private int idx;
@@ -87,7 +87,7 @@ public class BLinkTree {
             if (!hasNext()) {
                 throw new NoSuchElementException();
             }
-            Value key = LeafPage.keyAt(snapshot, idx);
+            byte[] key = LeafPage.keyAt(snapshot, idx);
             Entry entry = new Entry(key, LeafPage.valueAt(snapshot, idx));
             lastKey = key;
             idx++;
@@ -107,7 +107,7 @@ public class BLinkTree {
                     }
                     int from = 0;
                     if (lastKey != null) {
-                        int i = LeafPage.find(snapshot, lastKey.bytes());
+                        int i = LeafPage.find(snapshot, lastKey);
                         from = i >= 0 ? i + 1 : -(i + 1);
                     }
                     currentId = Pages.link(snapshot);
@@ -128,7 +128,7 @@ public class BLinkTree {
         }
     }
 
-    private Value getUnderEpoch(byte[] key) {
+    private byte[] getUnderEpoch(byte[] key) {
         long id = rootRef.get();
         while (true) {
             try (PageRef ref = store.readPage(id)) {
@@ -146,10 +146,10 @@ public class BLinkTree {
         }
     }
 
-    public void addValue(Value key, Value value) {
+    public void addValue(byte[] key, byte[] value) {
         long ticket = store.enterOp();
         try {
-            addValueUnderEpoch(key.bytes(), value.bytes());
+            addValueUnderEpoch(key, value);
         } finally {
             store.exitOp(ticket);
         }
@@ -259,10 +259,10 @@ public class BLinkTree {
         }
     }
 
-    public void delete(Value key) {
+    public void delete(byte[] key) {
         long ticket = store.enterOp();
         try {
-            deleteUnderEpoch(key.bytes());
+            deleteUnderEpoch(key);
         } finally {
             store.exitOp(ticket);
         }
